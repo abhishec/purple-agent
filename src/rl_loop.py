@@ -6,6 +6,7 @@ Inspired by BrainOS agent-rl.ts + rl-agent-loop.ts.
 Two-layer learning (same as BrainOS):
 1. Case log: task patterns + outcomes → injected as primer before each task
 2. Quality scoring: measures answer quality (tool usage, completeness, policy adherence)
+3. Benchmark intelligence: dimension scores + failure patterns from report_analyzer
 """
 from __future__ import annotations
 import json
@@ -129,9 +130,31 @@ def record_outcome(
 
 def build_rl_primer(task_text: str) -> str:
     """
-    Build a case-log primer — injected before task execution.
+    Build a full learning primer — case log + benchmark intelligence.
+    Injected before task execution by worker_brain.py PRIME phase.
     Inspired by BrainOS rl-agent-loop.ts injectCaseLogContext().
     """
+    parts = []
+
+    # Layer 1: case log patterns
+    case_primer = _build_case_log_primer(task_text)
+    if case_primer:
+        parts.append(case_primer)
+
+    # Layer 2: benchmark intelligence (dimension scores + failure patterns)
+    try:
+        from src.report_analyzer import build_benchmark_primer
+        bench_primer = build_benchmark_primer()
+        if bench_primer:
+            parts.append(bench_primer)
+    except Exception:
+        pass
+
+    return "\n\n".join(parts)
+
+
+def _build_case_log_primer(task_text: str) -> str:
+    """Keyword-match past cases and build primer block."""
     cases = _load_cases()
     if not cases:
         return ""
