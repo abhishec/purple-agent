@@ -17,13 +17,8 @@ Gap modules wired:
   Gap 3 — document_generator: structured output for PRD/post-mortem/briefs
   Gap 4 — financial_calculator: exact arithmetic (available in COMPUTE state)
   Gap 5 — 8-state FSM: COMPUTE + MUTATE + SCHEDULE_NOTIFY + multi-checkpoint
-
-Wave 6 additions:
-  Training sync: seeds rl_loop from S3 benchmark JSONL on first run
-  Report analysis: injects benchmark dimension guidance into RL primer
 """
 from __future__ import annotations
-import asyncio
 import time
 import json
 
@@ -47,9 +42,6 @@ from src.paginated_tools import paginated_fetch          # Gap 2
 from src.document_generator import build_approval_brief  # Gap 3
 from src.config import GREEN_AGENT_MCP_URL
 
-# Training sync — runs once per process on first task (Wave 6)
-_TRAINING_SYNCED = False
-
 
 def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
     if not policy_doc:
@@ -64,33 +56,10 @@ def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
     return None, f"\nPOLICY:\n{policy_doc}\n"
 
 
-async def _sync_training_background() -> None:
-    """
-    Wave 6: Sync training data + benchmark reports in background thread.
-    Non-blocking — uses executor so file I/O + boto3 don't stall the event loop.
-    Runs once per process startup (or when stale).
-    """
-    global _TRAINING_SYNCED
-    loop = asyncio.get_event_loop()
-
-    def _sync():
-        try:
-            from src.training_loader import seed_from_training_data, is_stale
-            from src.report_analyzer import analyze_and_save
-            if is_stale():
-                seed_from_training_data()
-            analyze_and_save()
-        except Exception:
-            pass
-
-    _TRAINING_SYNCED = True
-    await loop.run_in_executor(None, _sync)
-
-
 class MiniAIWorker:
     """
     Mini AI Worker for AgentX competition.
-    Mirrors BrainOS AI Worker cognitive architecture in ~300 lines.
+    Mirrors BrainOS AI Worker cognitive architecture in ~250 lines.
 
     Worker identity: session_id (one worker instance per benchmark session).
     Worker memory: session_context (multi-turn, Haiku-compressed).
@@ -98,7 +67,6 @@ class MiniAIWorker:
     Worker safety: hitl_guard (mutation blocking), privacy_guard (early refuse).
     Worker precision: financial_calculator (Gap 4), paginated_tools (Gap 2).
     Worker output: document_generator (Gap 3) + structured_output (bracket format).
-    Worker learning: training_loader seeds RL from benchmark JSONL (Wave 6).
     """
 
     def __init__(self, session_id: str):
@@ -115,13 +83,8 @@ class MiniAIWorker:
         task_id: str,
     ) -> str:
         """Entry point. 3-phase: PRIME → EXECUTE → REFLECT."""
-        global _TRAINING_SYNCED
         start_ms = int(time.time() * 1000)
         self._ep = tools_endpoint or GREEN_AGENT_MCP_URL
-
-        # Wave 6: kick off training sync in background on first task
-        if not _TRAINING_SYNCED:
-            asyncio.ensure_future(_sync_training_background())
 
         # ── PHASE 1: PRIME ────────────────────────────────────────────────
         context = await self._prime(task_text, policy_doc, task_id)
@@ -142,14 +105,13 @@ class MiniAIWorker:
         """
         Load all worker context before execution.
         Mirrors BrainOS cognitive-planner.ts PRIME phase.
-        Wave 6: RL primer now includes benchmark intelligence layer.
         """
         # Privacy fast-fail (Gap 1 precursor — refuse before any tool cost)
         privacy = check_privacy(task_text)
         if privacy and privacy.get("refused"):
             return {"refused": True, "message": privacy["message"]}
 
-        # RL primer — now includes: case log patterns + benchmark guidance (Wave 6)
+        # RL primer (learned patterns from past tasks)
         rl_primer = build_rl_primer(task_text)
         if rl_primer:
             self.budget.consume(rl_primer, "rl_primer")
@@ -161,12 +123,6 @@ class MiniAIWorker:
             if multi_turn_ctx:
                 self.budget.consume(multi_turn_ctx, "session_context")
 
-        # Tool discovery — done FIRST so build_phase_prompt gets connector names
-        try:
-            self._tools = await discover_tools(self._ep, session_id=self.session_id)
-        except Exception:
-            self._tools = []
-
         # FSM — restore checkpoint or start fresh
         checkpoint = get_fsm_checkpoint(self.session_id)
         fsm = FSMRunner(
@@ -174,7 +130,7 @@ class MiniAIWorker:
             session_id=self.session_id,
             checkpoint=checkpoint,
         )
-        phase_prompt = fsm.build_phase_prompt(available_tools=self._tools or None)
+        phase_prompt = fsm.build_phase_prompt()
         self.budget.consume(phase_prompt, "fsm_phase")
 
         # Policy enforcement
@@ -183,7 +139,13 @@ class MiniAIWorker:
             self.budget.consume(policy_section, "policy")
             if fsm.current_state.value == "POLICY_CHECK":
                 fsm.apply_policy(policy_result)
-                phase_prompt = fsm.build_phase_prompt(available_tools=self._tools or None)
+                phase_prompt = fsm.build_phase_prompt()
+
+        # Tool discovery
+        try:
+            self._tools = await discover_tools(self._ep, session_id=self.session_id)
+        except Exception:
+            self._tools = []
 
         # Gap 1: HITL gate — check if we should block mutations at APPROVAL_GATE
         gate_fires, hitl_prompt = check_approval_gate(
@@ -336,7 +298,7 @@ class MiniAIWorker:
             requires_hitl=fsm.ctx.requires_hitl,
         )
 
-        # Async Haiku compression — upgrade inline dump to real LLM summary
+        # Gap 2 (async Haiku compression) — upgrade inline dump to real LLM summary
         await maybe_compress_async(self.session_id)
 
         # RL outcome recording

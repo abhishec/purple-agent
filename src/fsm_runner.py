@@ -1,13 +1,19 @@
 """
 fsm_runner.py
 8-state FSM for structured business process execution.
+Upgraded from 6-state to match BrainOS process-intelligence/fsm-runner.ts exactly.
 
-Wave 7: build_phase_prompt() now reads per-state instructions from
-process_definitions.py (data layer) instead of hardcoded strings.
-Also accepts available_tools list → injects tool-awareness at each state.
+States: DECOMPOSE → ASSESS → COMPUTE → POLICY_CHECK → APPROVAL_GATE
+        → MUTATE → SCHEDULE_NOTIFY → COMPLETE
+Error paths: ESCALATE, FAILED
 
-The executor is generic. The definitions are smart. Never hardcode
-"what to do at DECOMPOSE" here — put it in process_definitions.py.
+Key upgrades over Wave 2:
+- COMPUTE state: run financial calculations BEFORE policy check (no tools, pure math)
+- MUTATE replaces EXECUTE: semantically explicit — this is where state changes happen
+- SCHEDULE_NOTIFY: send notifications AFTER mutations, not mixed in with them
+- HITL guard now wired at APPROVAL_GATE (mutate tools blocked by hitl_guard.py)
+- Multi-checkpoint: processes that need sequential human confirmation use
+  APPROVAL_GATE → MUTATE → APPROVAL_GATE (loop via fsm.reopen_approval_gate())
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -18,35 +24,91 @@ from typing import Any
 class FSMState(str, Enum):
     DECOMPOSE       = "DECOMPOSE"
     ASSESS          = "ASSESS"
-    COMPUTE         = "COMPUTE"
+    COMPUTE         = "COMPUTE"         # NEW: financial math, pure computation
     POLICY_CHECK    = "POLICY_CHECK"
-    APPROVAL_GATE   = "APPROVAL_GATE"
-    MUTATE          = "MUTATE"
-    SCHEDULE_NOTIFY = "SCHEDULE_NOTIFY"
+    APPROVAL_GATE   = "APPROVAL_GATE"   # HITL: mutation tools blocked here
+    MUTATE          = "MUTATE"          # was EXECUTE: state changes happen here
+    SCHEDULE_NOTIFY = "SCHEDULE_NOTIFY" # NEW: notifications and scheduling
     COMPLETE        = "COMPLETE"
     ESCALATE        = "ESCALATE"
     FAILED          = "FAILED"
 
 
 # Process type → ordered FSM states
+# Mirrors BrainOS process-registry.ts 16 built-in types
 PROCESS_TEMPLATES: dict[str, list[FSMState]] = {
-    "expense_approval":       [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE, FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE, FSMState.MUTATE, FSMState.COMPLETE],
-    "procurement":            [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE, FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE, FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE],
-    "hr_offboarding":         [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.POLICY_CHECK, FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE],
-    "incident_response":      [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE, FSMState.APPROVAL_GATE, FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE],
-    "invoice_reconciliation": [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE, FSMState.POLICY_CHECK, FSMState.MUTATE, FSMState.COMPLETE],
-    "customer_onboarding":    [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE],
-    "compliance_audit":       [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE, FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE, FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE],
-    "dispute_resolution":     [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE, FSMState.MUTATE, FSMState.COMPLETE],
-    "order_management":       [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE, FSMState.APPROVAL_GATE, FSMState.MUTATE, FSMState.COMPLETE],
-    "sla_breach":             [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE, FSMState.POLICY_CHECK, FSMState.SCHEDULE_NOTIFY, FSMState.ESCALATE],
-    "month_end_close":        [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE, FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE, FSMState.MUTATE, FSMState.COMPLETE],
-    "ar_collections":         [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE, FSMState.POLICY_CHECK, FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE],
-    "subscription_migration": [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE, FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE, FSMState.MUTATE, FSMState.COMPLETE],
-    "payroll":                [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE, FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE, FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE],
-    "general":                [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.MUTATE, FSMState.COMPLETE],
+    "expense_approval": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE,
+        FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE,
+        FSMState.MUTATE, FSMState.COMPLETE,
+    ],
+    "procurement": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE,
+        FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE,
+        FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE,
+    ],
+    "hr_offboarding": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.POLICY_CHECK,
+        FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE,
+    ],
+    "incident_response": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE,
+        FSMState.APPROVAL_GATE, FSMState.MUTATE,
+        FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE,
+    ],
+    "invoice_reconciliation": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE,
+        FSMState.POLICY_CHECK, FSMState.MUTATE, FSMState.COMPLETE,
+    ],
+    "customer_onboarding": [
+        FSMState.DECOMPOSE, FSMState.ASSESS,
+        FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE,
+    ],
+    "compliance_audit": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE,
+        FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE,
+        FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE,
+    ],
+    "dispute_resolution": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.POLICY_CHECK,
+        FSMState.APPROVAL_GATE, FSMState.MUTATE, FSMState.COMPLETE,
+    ],
+    "order_management": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE,
+        FSMState.APPROVAL_GATE, FSMState.MUTATE, FSMState.COMPLETE,
+    ],
+    "sla_breach": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE,
+        FSMState.POLICY_CHECK, FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE,
+    ],
+    "month_end_close": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE,
+        FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE,
+        FSMState.MUTATE, FSMState.COMPLETE,
+    ],
+    "ar_collections": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE,
+        FSMState.POLICY_CHECK, FSMState.MUTATE,
+        FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE,
+    ],
+    "subscription_migration": [
+        # Multi-checkpoint: 5 confirm gates before migration
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE,
+        FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE,
+        FSMState.MUTATE, FSMState.COMPLETE,
+    ],
+    "payroll": [
+        FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPUTE,
+        FSMState.POLICY_CHECK, FSMState.APPROVAL_GATE,
+        FSMState.MUTATE, FSMState.SCHEDULE_NOTIFY, FSMState.COMPLETE,
+    ],
+    "general": [
+        FSMState.DECOMPOSE, FSMState.ASSESS,
+        FSMState.MUTATE, FSMState.COMPLETE,
+    ],
 }
 
+# Keywords → process type (extended with new types)
 PROCESS_KEYWORDS: dict[str, list[str]] = {
     "expense_approval":       ["expense", "reimbursement", "approval", "spend", "budget", "receipt", "claim"],
     "procurement":            ["vendor", "purchase", "order", "contract", "supplier", "rfp", "quote", "procurement"],
@@ -67,14 +129,17 @@ PROCESS_KEYWORDS: dict[str, list[str]] = {
 
 
 def detect_process_type(task_text: str) -> str:
+    """Keyword-match task text to the most specific process type."""
     text = task_text.lower()
-    best_type, best_score = "general", 0
+    best_type = "general"
+    best_score = 0
     for ptype, keywords in PROCESS_KEYWORDS.items():
         if ptype == "general":
             continue
         score = sum(1 for kw in keywords if kw in text)
         if score > best_score:
-            best_score, best_type = score, ptype
+            best_score = score
+            best_type = ptype
     return best_type
 
 
@@ -89,16 +154,29 @@ class FSMContext:
     policy_result: dict | None = None
     escalation_reason: str = ""
     requires_hitl: bool = False
-    approval_count: int = 0
+    approval_count: int = 0   # tracks multi-checkpoint approvals
 
 
 class FSMRunner:
     """
-    8-state FSM. Generic executor — instructions come from process_definitions.py.
-    Wave 7: build_phase_prompt() is connector-aware via available_tools param.
+    8-state FSM for business process execution.
+    Mirrors BrainOS process-intelligence/fsm-runner.ts.
+
+    Key behaviors:
+    - State-gated execution with policy + HITL checks
+    - COMPUTE state: math before mutation (no tools, no side effects)
+    - MUTATE state: all state changes happen here (hitl_guard wired at APPROVAL_GATE)
+    - Multi-checkpoint: reopen_approval_gate() for sequential confirms
+    - Per-phase prompt injection with phase-appropriate instructions
     """
 
-    def __init__(self, task_text: str, session_id: str, process_type: str | None = None, checkpoint=None):
+    def __init__(
+        self,
+        task_text: str,
+        session_id: str,
+        process_type: str | None = None,
+        checkpoint=None,
+    ):
         ptype = process_type or detect_process_type(task_text)
         self.ctx = FSMContext(task_text=task_text, session_id=session_id, process_type=ptype)
         self.states = PROCESS_TEMPLATES.get(ptype, PROCESS_TEMPLATES["general"])
@@ -158,19 +236,16 @@ class FSMRunner:
         return self.advance()
 
     def reopen_approval_gate(self) -> None:
+        """
+        Multi-checkpoint support: push back to APPROVAL_GATE from MUTATE.
+        Used for processes like subscription_migration that need 5 sequential confirms.
+        """
         if self.ctx.current_state == FSMState.MUTATE:
             self.ctx.state_history.append(FSMState.MUTATE.value)
             self.ctx.current_state = FSMState.APPROVAL_GATE
             self.ctx.approval_count += 1
 
-    def build_phase_prompt(self, available_tools: list[dict] | None = None) -> str:
-        """
-        Wave 7: reads instruction from process_definitions.py (data layer).
-        Falls back to generic instruction if process has no specific definition.
-        Injects tool-awareness if available_tools provided.
-        """
-        from src.process_definitions import get_state_instruction, get_connector_hints
-
+    def build_phase_prompt(self) -> str:
         state = self.ctx.current_state
         process = self.ctx.process_type.replace("_", " ").title()
         history_str = " → ".join(self.ctx.state_history + [state.value])
@@ -182,66 +257,59 @@ class FSMRunner:
             "",
         ]
 
-        # Read instruction from data layer (not hardcoded here)
-        instruction = get_state_instruction(self.ctx.process_type, state.value)
-
-        # Special overrides for terminal/error states (these don't live in definitions)
-        if state == FSMState.ESCALATE:
-            instruction = (
+        instructions = {
+            FSMState.DECOMPOSE: (
+                "Break this task into sub-tasks. Identify all data you need before acting. "
+                "List the process type and key entities (IDs, amounts, parties) you've identified."
+            ),
+            FSMState.ASSESS: (
+                "Gather ALL required data via read-only tools. "
+                "DO NOT take any actions or call mutation tools yet — only collect. "
+                "Collect: account balances, policy docs, entity states, history."
+            ),
+            FSMState.COMPUTE: (
+                "Run all required financial calculations now. "
+                "DO NOT call any tools — use only data already collected in ASSESS. "
+                "Compute: price deltas, prorated amounts, policy thresholds, depreciation, "
+                "amortization, SLA credits, variance percentages. "
+                "Show your work. Prepare an exact action plan with calculated values."
+            ),
+            FSMState.POLICY_CHECK: (
+                "Verify all policy rules against computed values. "
+                "Check every threshold, approval limit, and constraint. "
+                "Do not proceed to mutation if any policy rule is violated."
+            ),
+            FSMState.APPROVAL_GATE: (
+                "Human approval is required before any state changes. "
+                "MUTATION TOOLS ARE BLOCKED. Present your approval request document: "
+                "proposed actions, computed amounts, policy compliance status, risk assessment."
+            ),
+            FSMState.MUTATE: (
+                "All data collected. All calculations complete. All approvals received. "
+                "Execute the required state changes via tools. Be systematic and complete. "
+                "Log each action as you take it."
+            ),
+            FSMState.SCHEDULE_NOTIFY: (
+                "Mutations complete. Now handle all notifications and scheduling: "
+                "send confirmations, schedule follow-ups, notify relevant parties, "
+                "create audit log entries, set deadline reminders."
+            ),
+            FSMState.COMPLETE: (
+                "Summarize all completed actions and their outcomes. "
+                "List what was done, what was approved, what was deferred. Be concise."
+            ),
+            FSMState.ESCALATE: (
                 f"ESCALATION REQUIRED: {self.ctx.escalation_reason}\n"
                 "Do not attempt to resolve this yourself. "
                 "Explain clearly why escalation is needed and who must act."
-            )
-        elif state == FSMState.FAILED:
-            instruction = (
+            ),
+            FSMState.FAILED: (
                 f"FAILED: {self.ctx.data.get('failure_reason', 'Unknown error')}\n"
                 "Explain what went wrong and what the next step should be."
-            )
-        elif not instruction:
-            # Absolute fallback — should rarely fire since process_definitions covers all states
-            instruction = f"Execute the {state.value} phase for this {process} process."
+            ),
+        }
 
-        lines.append(instruction)
-
-        # Tool awareness injection (Wave 7)
-        if available_tools:
-            tool_names = [t.get("name", "") for t in available_tools if t.get("name")]
-            hints = get_connector_hints(self.ctx.process_type)
-
-            # At ASSESS: call out read tools by name
-            if state == FSMState.ASSESS and tool_names:
-                read_tools = [
-                    n for n in tool_names
-                    if any(n.startswith(p) for p in ("get_", "list_", "fetch_", "search_", "read_", "check_"))
-                ]
-                if read_tools:
-                    lines.append(f"\nAvailable read tools: {', '.join(read_tools[:12])}")
-
-            # At MUTATE: call out mutation tools by name
-            elif state == FSMState.MUTATE and tool_names:
-                mutate_tools = [
-                    n for n in tool_names
-                    if any(n.startswith(p) for p in ("create_", "update_", "delete_", "send_", "approve_", "submit_", "cancel_", "post_"))
-                ]
-                if mutate_tools:
-                    lines.append(f"\nAvailable mutation tools: {', '.join(mutate_tools[:12])}")
-
-            # At SCHEDULE_NOTIFY: call out notify/schedule tools
-            elif state == FSMState.SCHEDULE_NOTIFY and tool_names:
-                notify_tools = [
-                    n for n in tool_names
-                    if any(n.startswith(p) for p in ("send_", "notify_", "schedule_", "post_", "email_", "slack_"))
-                ]
-                if notify_tools:
-                    lines.append(f"\nAvailable notify/schedule tools: {', '.join(notify_tools[:8])}")
-
-            # At DECOMPOSE: show connector hint for awareness
-            elif state == FSMState.DECOMPOSE and hints:
-                relevant = [n for n in tool_names if any(h in n.lower() for h in hints)]
-                if relevant:
-                    lines.append(f"\nConnectors available for this process: {', '.join(relevant[:8])}")
-                elif tool_names:
-                    lines.append(f"\nAll available tools: {', '.join(tool_names[:10])}")
+        lines.append(instructions.get(state, "Execute the current phase."))
 
         if self.ctx.approval_count > 0:
             lines.append(f"\n[Multi-checkpoint: approval gate #{self.ctx.approval_count + 1}]")

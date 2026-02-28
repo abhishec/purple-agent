@@ -35,8 +35,16 @@ CRITICAL RULES:
 3. If a task mentions specific IDs (e.g. BK-001, ORD-001, EMP-MR), call the relevant tool directly.
 4. Complete ALL required actions end-to-end before writing your final summary.
 5. For list/ranking answers: return ["Item1", "Item2"] bracket format exactly.
+
+EXECUTION ORDER (critical for scoring):
+- Phase 1 READ: Call all get_*/check_*/calculate_* tools first to gather data.
+- Phase 2 EXECUTE: Call create_*/update_*/post_*/send_*/approve_*/flag_* mutation tools.
+- Phase 3 NOTIFY: Call notification/communication tools last (send_notification, post_status_update, draft_*).
+- Always escalate/page BEFORE creating reports. Always calculate BEFORE drafting client communications.
+- If escalation is required per task policy: call escalate_*/page_* tools BEFORE notify_*/send_* tools.
+- Use EVERY available tool that is relevant to the task — incomplete tool coverage loses points.
 {policy_section}
-Execute the task fully. After all actions, provide a concise answer."""
+Execute the task fully and in correct order. After all actions, provide a concise answer."""
 
     messages: list[dict] = [{"role": "user", "content": task_text}]
     tool_count = 0

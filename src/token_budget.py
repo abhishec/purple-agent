@@ -22,8 +22,8 @@ MODELS = {
 
 # FSM state → default model tier (mirrors BrainOS token-budget.ts)
 STATE_MODEL = {
-    "DECOMPOSE":     "haiku",   # classification only
-    "ASSESS":        "haiku",   # data gathering
+    "DECOMPOSE":     "haiku",   # classification phase — haiku is fast enough
+    "ASSESS":        "haiku",   # data gathering — haiku + full tokens is sufficient
     "POLICY_CHECK":  "haiku",   # deterministic anyway
     "APPROVAL_GATE": "haiku",   # summarize for human
     "EXECUTE":       "sonnet",  # actual work
@@ -91,7 +91,9 @@ class TokenBudget:
         r = self.remaining
         if r < 500:   return 256
         if r < 2000:  return 512
-        if fsm_state == "EXECUTE": return min(4096, r // 2)
+        # All active execution states get full 4096 budget
+        ACTIVE_STATES = {"EXECUTE", "DECOMPOSE", "ASSESS", "COMPUTE", "MUTATE", "SCHEDULE_NOTIFY"}
+        if fsm_state in ACTIVE_STATES: return min(4096, r // 2)
         return min(1024, r // 3)
 
     def cap_prompt(self, text: str, phase: str = "context") -> str:
