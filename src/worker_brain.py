@@ -41,6 +41,10 @@ from src.hitl_guard import check_approval_gate          # Gap 1
 from src.paginated_tools import paginated_fetch          # Gap 2
 from src.document_generator import build_approval_brief  # Gap 3
 from src.config import GREEN_AGENT_MCP_URL
+from src.smart_classifier import classify_process_type   # Wave 8: LLM routing
+from src.knowledge_extractor import get_relevant_knowledge, extract_and_store  # Wave 8
+from src.entity_extractor import get_entity_context, record_task_entities       # Wave 8
+from src.recovery_agent import wrap_with_recovery                               # Wave 8
 
 
 def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
@@ -124,10 +128,16 @@ class MiniAIWorker:
                 self.budget.consume(multi_turn_ctx, "session_context")
 
         # FSM — restore checkpoint or start fresh
+        # Wave 8: use LLM classifier for accurate process type detection
         checkpoint = get_fsm_checkpoint(self.session_id)
+        if not checkpoint:
+            process_type, _cls_conf = await classify_process_type(task_text)
+        else:
+            process_type = None   # checkpoint already has process_type
         fsm = FSMRunner(
             task_text=task_text,
             session_id=self.session_id,
+            process_type=process_type,
             checkpoint=checkpoint,
         )
         phase_prompt = fsm.build_phase_prompt()
@@ -155,6 +165,14 @@ class MiniAIWorker:
             process_type=fsm.process_type,
         )
 
+        # Wave 8: knowledge base + entity memory injection
+        kb_context = get_relevant_knowledge(task_text, fsm.process_type)
+        entity_ctx = get_entity_context(task_text)
+        if kb_context:
+            self.budget.consume(kb_context, "knowledge")
+        if entity_ctx:
+            self.budget.consume(entity_ctx, "entities")
+
         # Build system context
         context_parts = [
             f"## MiniAIWorker | Task: {task_id} | Session: {self.session_id}",
@@ -162,6 +180,10 @@ class MiniAIWorker:
         ]
         if rl_primer:
             context_parts.append(self.budget.cap_prompt(rl_primer, "rl"))
+        if kb_context:
+            context_parts.append(self.budget.cap_prompt(kb_context, "knowledge"))
+        if entity_ctx:
+            context_parts.append(self.budget.cap_prompt(entity_ctx, "entities"))
         if multi_turn_ctx:
             context_parts.append(self.budget.cap_prompt(multi_turn_ctx, "history"))
         context_parts.append(phase_prompt)
@@ -202,13 +224,16 @@ class MiniAIWorker:
         max_tokens = self.budget.get_max_tokens(fsm.current_state.value)
 
         # Schema-resilient tool call wrapper (Gap 2 + schema_adapter combined)
+        # Wave 8: wrapped with recovery agent for auto-retry on failure
         schema_cache = get_schema_cache(self.session_id)
 
-        async def on_tool_call(tool_name: str, params: dict) -> dict:
+        async def _base_tool_call(tool_name: str, params: dict) -> dict:
             try:
                 return await resilient_tool_call(tool_name, params, _raw_call, schema_cache)
             except Exception as e:
                 return {"error": str(e)}
+
+        on_tool_call = wrap_with_recovery(_base_tool_call, available_tools=self._tools)
 
         async def _raw_call(tool_name: str, params: dict) -> dict:
             # Gap 2: paginated tools — wrap bulk data calls automatically
@@ -309,6 +334,16 @@ class MiniAIWorker:
             tool_count=tool_count,
             policy_passed=policy_passed,
             error=error,
+        )
+
+        # Wave 8: extract knowledge + entities in background (fire-and-forget)
+        asyncio.ensure_future(
+            extract_and_store(task_text, answer, fsm.process_type, quality)
+        )
+        asyncio.ensure_future(
+            asyncio.get_event_loop().run_in_executor(
+                None, record_task_entities, task_text, answer, fsm.process_type
+            )
         )
 
         # Format answer for competition judge
