@@ -147,3 +147,53 @@ async def training_status():
             "failure_patterns": len(intel.get("failure_patterns", [])),
         },
     }
+
+
+@app.get("/rl/status")
+async def rl_status():
+    """
+    Show RL loop health — case log stats, quality distribution, recent outcomes.
+    Use this to verify the RL loop is recording and learning correctly.
+    """
+    from src.rl_loop import _load_cases
+    import statistics
+
+    cases = _load_cases()
+    if not cases:
+        return {
+            "status": "empty",
+            "total_cases": 0,
+            "message": "No RL data yet. Run tasks to populate case log.",
+        }
+
+    qualities = [c.get("quality", 0) for c in cases]
+    outcomes = [c.get("outcome", "") for c in cases]
+    seeded = [c for c in cases if c.get("quality", 0) == 1.0 and not c.get("what_failed")]
+
+    recent = sorted(cases, key=lambda c: c.get("timestamp", 0), reverse=True)[:5]
+
+    return {
+        "status": "active",
+        "total_cases": len(cases),
+        "seeded_from_training": len(seeded),
+        "live_recorded": len(cases) - len(seeded),
+        "quality": {
+            "mean": round(statistics.mean(qualities), 3) if qualities else 0,
+            "median": round(statistics.median(qualities), 3) if qualities else 0,
+            "min": round(min(qualities), 3) if qualities else 0,
+            "max": round(max(qualities), 3) if qualities else 0,
+        },
+        "outcomes": {
+            "success": outcomes.count("success"),
+            "partial": outcomes.count("partial"),
+            "failure": outcomes.count("failure"),
+        },
+        "recent_5": [
+            {
+                "task": c.get("task_summary", "")[:60],
+                "outcome": c.get("outcome"),
+                "quality": c.get("quality"),
+            }
+            for c in recent
+        ],
+    }

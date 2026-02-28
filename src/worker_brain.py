@@ -161,6 +161,12 @@ class MiniAIWorker:
             if multi_turn_ctx:
                 self.budget.consume(multi_turn_ctx, "session_context")
 
+        # Tool discovery — done FIRST so build_phase_prompt gets connector names
+        try:
+            self._tools = await discover_tools(self._ep, session_id=self.session_id)
+        except Exception:
+            self._tools = []
+
         # FSM — restore checkpoint or start fresh
         checkpoint = get_fsm_checkpoint(self.session_id)
         fsm = FSMRunner(
@@ -168,7 +174,7 @@ class MiniAIWorker:
             session_id=self.session_id,
             checkpoint=checkpoint,
         )
-        phase_prompt = fsm.build_phase_prompt()
+        phase_prompt = fsm.build_phase_prompt(available_tools=self._tools or None)
         self.budget.consume(phase_prompt, "fsm_phase")
 
         # Policy enforcement
@@ -177,13 +183,7 @@ class MiniAIWorker:
             self.budget.consume(policy_section, "policy")
             if fsm.current_state.value == "POLICY_CHECK":
                 fsm.apply_policy(policy_result)
-                phase_prompt = fsm.build_phase_prompt()
-
-        # Tool discovery
-        try:
-            self._tools = await discover_tools(self._ep, session_id=self.session_id)
-        except Exception:
-            self._tools = []
+                phase_prompt = fsm.build_phase_prompt(available_tools=self._tools or None)
 
         # Gap 1: HITL gate — check if we should block mutations at APPROVAL_GATE
         gate_fires, hitl_prompt = check_approval_gate(
