@@ -4,17 +4,29 @@ import uuid
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 
-from src.executor import handle_task
+from src.worker_brain import run_worker   # MiniAIWorker replaces executor directly
 
-app = FastAPI(title="BrainOS Purple Agent", version="1.0.0")
+app = FastAPI(title="BrainOS Purple Agent", version="2.0.0")
 
 AGENT_CARD = {
     "name": "BrainOS Purple Agent",
-    "description": "Thin BrainOS connector that solves business tasks using BrainOS (with Claude fallback).",
-    "version": "1.0.0",
+    "description": (
+        "Mini AI Worker — a competition-focused distillation of the BrainOS AI Worker. "
+        "8-state FSM, deterministic policy enforcement, Haiku memory compression, "
+        "financial arithmetic, schema drift resilience, and RL quality loop."
+    ),
+    "version": "2.0.0",
     "url": os.getenv("PURPLE_AGENT_CARD_URL", "https://purple.agentbench.usebrainos.com"),
     "capabilities": {"streaming": False, "tools": True},
-    "skills": [{"id": "general", "name": "General Business Task Solver"}],
+    "skills": [{
+        "id": "business-process",
+        "name": "Business Process AI Worker",
+        "description": (
+            "End-to-end business process execution: expense approval, procurement, "
+            "offboarding, invoice reconciliation, SLA breach, order management, "
+            "compliance audit, dispute resolution, AR collections, month-end close."
+        ),
+    }],
 }
 
 
@@ -25,7 +37,7 @@ async def agent_card():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "agent": "purple-brainos-connector"}
+    return {"status": "ok", "agent": "brainos-mini-ai-worker", "version": "2.0.0"}
 
 
 @app.post("/")
@@ -45,7 +57,7 @@ async def a2a_handler(request: Request):
     tools_endpoint = metadata.get("tools_endpoint", "")
     session_id = metadata.get("session_id", task_id)
 
-    answer = await handle_task(
+    answer = await run_worker(
         task_text=task_text,
         policy_doc=policy_doc,
         tools_endpoint=tools_endpoint,
