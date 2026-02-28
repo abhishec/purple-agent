@@ -1,18 +1,19 @@
 """
 session_context.py
-Multi-turn A2A conversation context — per session_id history with compression.
-Inspired by BrainOS memory compression + brain context mesh.
+Multi-turn A2A conversation memory + FSM state persistence.
+Inspired by BrainOS memory compression + checkpoint_data system.
 
-Each A2A session_id gets its own context window.
-Older turns are compressed into a summary; recent 6 turns stay raw.
-Evicts sessions idle for > 1 hour.
+Each session_id gets:
+- Conversation history (compressed when > 20 turns)
+- FSM state (restored on next turn — multi-turn process continuity)
+- Schema cache (column name corrections persist within session)
 """
 from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
 MAX_SESSION_AGE = 3600   # 1 hour idle → evict
-MAX_RAW_TURNS = 20       # compress when exceeded
+MAX_RAW_TURNS = 20
 KEEP_RECENT = 6
 
 _sessions: dict[str, "SessionContext"] = {}
@@ -20,9 +21,18 @@ _sessions: dict[str, "SessionContext"] = {}
 
 @dataclass
 class Turn:
-    role: str       # "user" | "assistant"
+    role: str
     content: str
     timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class FSMCheckpoint:
+    """Persisted FSM state for multi-turn continuity. Mirrors BrainOS checkpoint_data."""
+    process_type: str
+    state_idx: int
+    state_history: list[str] = field(default_factory=list)
+    requires_hitl: bool = False
 
 
 @dataclass
@@ -30,10 +40,13 @@ class SessionContext:
     session_id: str
     turns: list[Turn] = field(default_factory=list)
     compressed_summary: str = ""
-    process_type: str = "general"
+    fsm_checkpoint: FSMCheckpoint | None = None
+    schema_cache: dict = field(default_factory=dict)   # column correction cache
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
 
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def get_or_create(session_id: str) -> SessionContext:
     _evict_stale()
@@ -51,10 +64,7 @@ def add_turn(session_id: str, role: str, content: str) -> None:
 
 
 def get_context_prompt(session_id: str) -> str:
-    """
-    Returns compressed summary + recent turns formatted for system prompt injection.
-    Empty string if this is the first turn in the session.
-    """
+    """Compressed history + recent turns for system prompt injection."""
     ctx = _sessions.get(session_id)
     if not ctx or (not ctx.compressed_summary and not ctx.turns):
         return ""
@@ -73,30 +83,52 @@ def get_context_prompt(session_id: str) -> str:
     return "\n".join(parts)
 
 
-def set_process_type(session_id: str, process_type: str) -> None:
-    get_or_create(session_id).process_type = process_type
-
-
-def get_process_type(session_id: str) -> str:
-    ctx = _sessions.get(session_id)
-    return ctx.process_type if ctx else "general"
-
-
 def is_multi_turn(session_id: str) -> bool:
     ctx = _sessions.get(session_id)
     return bool(ctx and ctx.turns)
 
 
+def get_schema_cache(session_id: str) -> dict:
+    """Per-session schema correction cache — column name fixes persist across turns."""
+    return get_or_create(session_id).schema_cache
+
+
+# ── FSM state persistence ─────────────────────────────────────────────────────
+
+def save_fsm_checkpoint(
+    session_id: str,
+    process_type: str,
+    state_idx: int,
+    state_history: list[str],
+    requires_hitl: bool = False,
+) -> None:
+    """Save FSM state after each turn so next turn can resume where we left off."""
+    ctx = get_or_create(session_id)
+    ctx.fsm_checkpoint = FSMCheckpoint(
+        process_type=process_type,
+        state_idx=state_idx,
+        state_history=list(state_history),
+        requires_hitl=requires_hitl,
+    )
+
+
+def get_fsm_checkpoint(session_id: str) -> FSMCheckpoint | None:
+    """Restore FSM state from previous turn. None if first turn."""
+    ctx = _sessions.get(session_id)
+    return ctx.fsm_checkpoint if ctx else None
+
+
+# ── Internal ──────────────────────────────────────────────────────────────────
+
 def _compress_inline(ctx: SessionContext) -> None:
-    """Inline compression — truncates older turns into plain summary (no LLM call)."""
     older = ctx.turns[:-KEEP_RECENT]
     keep = ctx.turns[-KEEP_RECENT:]
     if not older:
         return
     lines = [f"{'User' if t.role == 'user' else 'Agent'}: {t.content[:200]}" for t in older]
-    new_block = "\n".join(lines)
+    block = "\n".join(lines)
     ctx.compressed_summary = (
-        ctx.compressed_summary + "\n\n" + new_block if ctx.compressed_summary else new_block
+        ctx.compressed_summary + "\n\n" + block if ctx.compressed_summary else block
     )
     ctx.turns = keep
 

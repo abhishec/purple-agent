@@ -125,11 +125,17 @@ class FSMRunner:
     - Per-phase prompt injection
     """
 
-    def __init__(self, task_text: str, session_id: str, process_type: str | None = None):
+    def __init__(self, task_text: str, session_id: str, process_type: str | None = None, checkpoint=None):
         ptype = process_type or detect_process_type(task_text)
         self.ctx = FSMContext(task_text=task_text, session_id=session_id, process_type=ptype)
         self.states = PROCESS_TEMPLATES.get(ptype, PROCESS_TEMPLATES["general"])
         self._idx = 0
+        if checkpoint:
+            self.ctx.process_type = checkpoint.process_type
+            self.states = PROCESS_TEMPLATES.get(checkpoint.process_type, PROCESS_TEMPLATES["general"])
+            self._idx = checkpoint.state_idx
+            self.ctx.state_history = list(checkpoint.state_history)
+            self.ctx.current_state = self.states[self._idx] if self._idx < len(self.states) else FSMState.COMPLETE
 
     @property
     def current_state(self) -> FSMState:

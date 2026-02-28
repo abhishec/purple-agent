@@ -16,12 +16,16 @@ async def solve_with_claude(
     tools: list[dict],
     on_tool_call: Callable[[str, dict], Awaitable[dict]],
     session_id: str,
+    model: str | None = None,
+    max_tokens: int = 4096,
 ) -> tuple[str, int]:
     """
     Direct Claude SDK fallback. Returns (answer, tool_count).
-    tool_count is fed into RL quality scoring.
+    model + max_tokens are set by TokenBudget — Haiku at >80% usage, Sonnet otherwise.
+    tool_count fed into RL quality scoring.
     """
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    effective_model = model or FALLBACK_MODEL
 
     system_prompt = f"""You are an autonomous business operations agent running in a benchmark evaluation.
 
@@ -30,16 +34,17 @@ CRITICAL RULES:
 2. Start calling tools IMMEDIATELY. Do not ask clarifying questions.
 3. If a task mentions specific IDs (e.g. BK-001, ORD-001, EMP-MR), call the relevant tool directly.
 4. Complete ALL required actions end-to-end before writing your final summary.
+5. For list/ranking answers: return ["Item1", "Item2"] bracket format exactly.
 {policy_section}
-Execute the task fully. After all actions, provide a concise summary."""
+Execute the task fully. After all actions, provide a concise answer."""
 
     messages: list[dict] = [{"role": "user", "content": task_text}]
     tool_count = 0
 
     for _ in range(MAX_ITERATIONS):
         response = await client.messages.create(
-            model=FALLBACK_MODEL,
-            max_tokens=4096,
+            model=effective_model,
+            max_tokens=max_tokens,
             system=system_prompt,
             tools=tools,
             messages=messages,
