@@ -12,6 +12,7 @@ from src.rl_loop import build_rl_primer, record_outcome
 from src.session_context import (
     add_turn, get_context_prompt, is_multi_turn,
     get_schema_cache, save_fsm_checkpoint, get_fsm_checkpoint,
+    maybe_compress_async,
 )
 from src.fsm_runner import FSMRunner
 from src.privacy_guard import check_privacy
@@ -50,8 +51,9 @@ async def handle_task(
     5. Policy check       — deterministic if JSON rules
     6. Schema-resilient tool calls — retry with column correction
     7. BrainOS → Claude fallback
-    8. RL outcome recording
-    9. Format competition answer
+    8. Async Haiku compression — proper LLM summary when > 20 turns
+    9. RL outcome recording
+   10. Format competition answer
     """
     start_ms = int(time.time() * 1000)
     ep = tools_endpoint or GREEN_AGENT_MCP_URL
@@ -178,7 +180,10 @@ async def handle_task(
         requires_hitl=fsm.ctx.requires_hitl,
     )
 
-    # ── 8. RL outcome recording ───────────────────────────────────────────────
+    # ── 8. Async Haiku compression — upgrade inline dump to real LLM summary ─
+    await maybe_compress_async(session_id)
+
+    # ── 9. RL outcome recording ───────────────────────────────────────────────
     policy_passed = policy_result.get("passed") if policy_result else None
     quality = record_outcome(
         task_text=task_text,
@@ -188,7 +193,7 @@ async def handle_task(
         error=error,
     )
 
-    # ── 9. Format competition answer ─────────────────────────────────────────
+    # ── 10. Format competition answer ─────────────────────────────────────────
     duration_ms = int(time.time() * 1000) - start_ms
     fsm_summary = fsm.get_summary()
 

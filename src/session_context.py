@@ -4,7 +4,7 @@ Multi-turn A2A conversation memory + FSM state persistence.
 Inspired by BrainOS memory compression + checkpoint_data system.
 
 Each session_id gets:
-- Conversation history (compressed when > 20 turns)
+- Conversation history (Haiku-compressed when > 20 turns via maybe_compress_async)
 - FSM state (restored on next turn — multi-turn process continuity)
 - Schema cache (column name corrections persist within session)
 """
@@ -59,7 +59,8 @@ def add_turn(session_id: str, role: str, content: str) -> None:
     ctx = get_or_create(session_id)
     ctx.turns.append(Turn(role=role, content=content))
     ctx.last_active = time.time()
-    if len(ctx.turns) > MAX_RAW_TURNS:
+    # Inline fallback — replaced by async Haiku compression when executor calls maybe_compress_async()
+    if len(ctx.turns) > MAX_RAW_TURNS * 2:
         _compress_inline(ctx)
 
 
@@ -93,6 +94,45 @@ def get_schema_cache(session_id: str) -> dict:
     return get_or_create(session_id).schema_cache
 
 
+async def maybe_compress_async(session_id: str) -> None:
+    """
+    Compress session history using Claude Haiku when > MAX_RAW_TURNS turns.
+    Preferred over _compress_inline — produces a real LLM summary, not a text dump.
+    Called by executor.py after each assistant turn completes.
+    Graceful no-op if compression not needed or Anthropic unavailable.
+    """
+    ctx = _sessions.get(session_id)
+    if not ctx or len(ctx.turns) <= MAX_RAW_TURNS:
+        return
+
+    from src.memory_compressor import compress_history
+
+    messages = [
+        {"role": t.role, "content": t.content}
+        for t in ctx.turns
+    ]
+    try:
+        compressed_msgs, summary, tokens_saved = await compress_history(messages)
+    except Exception:
+        # Fall back to inline compression rather than failing silently
+        _compress_inline(ctx)
+        return
+
+    if tokens_saved <= 0 or not summary:
+        return
+
+    # Rebuild turns from the compressed message list (drop system/summary messages)
+    new_turns = [
+        Turn(role=m["role"], content=m["content"])
+        for m in compressed_msgs
+        if m.get("role") in ("user", "assistant")
+    ]
+    ctx.turns = new_turns
+    ctx.compressed_summary = (
+        ctx.compressed_summary + "\n\n" + summary if ctx.compressed_summary else summary
+    )
+
+
 # ── FSM state persistence ─────────────────────────────────────────────────────
 
 def save_fsm_checkpoint(
@@ -121,6 +161,7 @@ def get_fsm_checkpoint(session_id: str) -> FSMCheckpoint | None:
 # ── Internal ──────────────────────────────────────────────────────────────────
 
 def _compress_inline(ctx: SessionContext) -> None:
+    """Fallback sync compression — used only when async path isn't available."""
     older = ctx.turns[:-KEEP_RECENT]
     keep = ctx.turns[-KEEP_RECENT:]
     if not older:
