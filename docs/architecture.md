@@ -2,113 +2,86 @@
 
 ## Overview
 
-Purple Agent is a competition-ready A2A (Agent-to-Agent) endpoint built for structured benchmark tasks. It solves three problems that most LLM wrappers ignore:
+Purple Agent is an A2A-compatible benchmark endpoint built for AgentBeats / AgentX.  
+It solves business tasks by calling tools exposed at the benchmark's MCP endpoint.
 
 ---
 
-## 1. Policy Enforcement (Deterministic)
-
-Most agents stuff a `policy_doc` into the system prompt and hope the LLM obeys.  
-Purple Agent runs a **deterministic rule evaluator** before any LLM call:
+## Request flow
 
 ```
-PolicyDoc → PolicyEvaluator.evaluate(task, policy)
-           → { compliant, violations, applied_rules }
-```
-
-- Rules are matched by **keyword lists** or **regex patterns**
-- `deny` rules produce violations before the LLM sees the task
-- Violations are injected as hard constraints in the system prompt
-- The `policy_compliant` flag in every response is **ground truth**, not a hallucination
-
-**Result:** Zero hallucination on compliance. Policy is enforced before generation, not hoped for after.
-
----
-
-## 2. Multi-Turn Memory with Compression
-
-Most agents start fresh every task or blindly grow the context window.  
-Purple Agent uses a **MemoryCompressor** that:
-
-1. Keeps the last N turns verbatim (recency wins)
-2. Summarizes older turns into a single `[Prior context summary: ...]` turn
-3. Injects the compressed history into every call
-
-```
-history[0..n] → compress → [summary_turn, ...recent_turns]
-```
-
-**Result:** Context gets smarter, not just bigger. Long tasks stay coherent.
-
----
-
-## 3. Structured Output Discipline
-
-Benchmarks reward precision. Prose answers score poorly.  
-Purple Agent enforces structure at two levels:
-
-**System prompt instruction:**
-> "Return answers as a JSON array of strings: ["Answer1", "Answer2"]. Sort alphabetically. No prose."
-
-**Output parser fallback chain:**
-1. JSON array extraction (primary)
-2. Numbered/bulleted list parsing
-3. Comma/semicolon split
-4. Single-string fallback
-
-**Result:** `["Answer1", "Answer2"]` — sorted, parseable, exact.
-
----
-
-## Request / Response Schema
-
-### POST `/api/a2a/purple-agent`
-
-**Request:**
-```json
-{
-  "task_id": "task-001",
-  "task": "List the capitals of France and Germany.",
-  "policy_doc": {
-    "rules": [
-      { "id": "r1", "type": "deny", "description": "No profanity", "keywords": ["..."] }
-    ],
-    "default_action": "allow"
-  },
-  "history": [
-    { "role": "user", "content": "Previous question..." },
-    { "role": "assistant", "content": "Previous answer..." }
-  ],
-  "expected_format": "list",
-  "context": "Optional additional context"
-}
-```
-
-**Response:**
-```json
-{
-  "task_id": "task-001",
-  "answers": ["Berlin", "Paris"],
-  "metadata": {
-    "policy_compliant": true,
-    "policy_violations": [],
-    "applied_rules": [],
-    "memory_compressed": false,
-    "memory_summary": null
-  }
-}
+AgentBeats benchmark
+        │
+        │  POST / (JSON-RPC 2.0, method=tasks/send)
+        ▼
+  FastAPI server  (src/server.py, port 9010)
+        │
+        ▼
+  executor.handle_task()
+        │
+        ├─ 1. discover_tools(tools_endpoint, session_id)
+        │       GET {tools_endpoint}/mcp/tools?session_id=...
+        │       Returns Anthropic-format tool list for this session
+        │
+        ├─ 2. brainos_client.run_task()  [PRIMARY PATH]
+        │       POST {BRAINOS_API_URL}/api/copilot/chat
+        │       Streams SSE — handles tool_call events → calls on_tool_call()
+        │       Raises BrainOSUnavailableError on failure
+        │
+        └─ 3. fallback_solver.solve_with_claude()  [FALLBACK]
+                Anthropic SDK messages.create() loop
+                Handles tool_use blocks → calls on_tool_call()
+                Up to 20 iterations
+                        │
+                        ▼
+              on_tool_call(tool_name, params)
+                POST {tools_endpoint}/mcp
+                { "tool": "...", "params": {...}, "session_id": "..." }
 ```
 
 ---
 
-## Component Map
+## Components
 
-```
-platform/
-├── app/api/a2a/purple-agent/route.ts   ← HTTP handler (Next.js App Router)
-└── lib/a2a/benchmark-solver.ts
-    ├── PolicyEvaluator                  ← deterministic rule engine
-    ├── MemoryCompressor                 ← history summarisation
-    ├── OutputFormatter                  ← structured output parser
-    └── BenchmarkSolver                  ← orchestrator
-```
+### `src/server.py`
+FastAPI application exposing three routes:
+- `GET /health` — liveness probe
+- `GET /.well-known/agent-card.json` — agent metadata (name, URL, capabilities)
+- `POST /` — main A2A handler (JSON-RPC 2.0, method=tasks/send)
+
+### `src/executor.py`
+Orchestrates the task resolution:
+1. Discovers tools via MCP bridge
+2. Tries BrainOS first
+3. Falls back to direct Claude if BrainOS unavailable
+
+### `src/brainos_client.py`
+Streams tasks through BrainOS copilot SSE API.  
+Handles `tool_call` events mid-stream by calling `on_tool_call()` and continuing.
+
+### `src/fallback_solver.py`
+Direct Claude SDK agentic loop.  
+Runs up to `MAX_ITERATIONS=20` tool-call rounds.
+
+### `src/mcp_bridge.py`
+HTTP client for the benchmark's MCP tool endpoint:
+- `discover_tools()` — GET tool list for session
+- `call_tool()` — POST a tool invocation
+
+### `src/config.py`
+All configuration from environment variables:
+- `BRAINOS_API_URL`, `BRAINOS_API_KEY`, `BRAINOS_ORG_ID`
+- `ANTHROPIC_API_KEY`
+- `FALLBACK_MODEL` (default: `claude-sonnet-4-6`)
+- `TOOL_TIMEOUT`, `TASK_TIMEOUT`
+
+---
+
+## Deployment
+
+- **Container**: Python 3.12 slim, non-root user `agentbeats`
+- **Port**: 9010
+- **Image**: `848269696611.dkr.ecr.us-east-1.amazonaws.com/agentbench-purple:latest`
+- **ECS Service**: `agentbench-purple` in cluster `nexusbrain-training`
+- **ALB routing**: Host header `purple.agentbench.usebrainos.com` → target group port 9010
+- **TLS**: ACM cert for `purple.agentbench.usebrainos.com` on ALB HTTPS listener

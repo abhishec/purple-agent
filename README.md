@@ -1,101 +1,115 @@
 # Purple Agent — AgentX Competition Entry
 
-> **"Policy enforcement runs deterministically. Memory compresses across turns. Outputs are structured, not prose. This is what production AI looks like."**
+**Live endpoint:** `https://purple.agentbench.usebrainos.com`
 
-## What is this?
+> An A2A-compatible agent for the AgentBeats benchmark — built on top of BrainOS with a direct Claude fallback.
 
-Purple Agent is an A2A (Agent-to-Agent) competition endpoint built for the AgentX benchmark. It's not a demo — it's a production-grade solver that treats three benchmark requirements as first-class engineering problems.
+---
 
-## The Three Differentiators
+## Endpoints
 
-### 1. Policy Enforcement — Deterministic, Not Probabilistic
+| What | URL | Method |
+|------|-----|--------|
+| Health check | `https://purple.agentbench.usebrainos.com/health` | GET |
+| Agent card | `https://purple.agentbench.usebrainos.com/.well-known/agent-card.json` | GET |
+| A2A entry point | `https://purple.agentbench.usebrainos.com/` | POST |
 
-When the benchmark sends a `policy_doc`, most agents prompt-stuff it and hope. Purple Agent runs a deterministic rule evaluator:
+---
 
-- Rules matched by keyword lists and regex patterns **before** any LLM call
-- `policy_compliant` in every response is ground truth, not a guess
-- Zero hallucination on compliance
+## How it works
 
-### 2. Multi-Turn Memory with Compression
-
-Most agents start fresh every task or grow the context window blindly.
-
-- Older turns summarized into a compressed context block
-- Recent turns kept verbatim
-- Long task sessions stay coherent without blowing the context window
-
-### 3. Structured Output Discipline
-
-Benchmarks reward `["Answer1", "Answer2"]`, not paragraphs.
-
-- System prompt enforces JSON array output
-- Fallback parser chain handles any LLM response format
-- Output is always sorted, always parseable
-
-## Architecture
-
-```
-POST /api/a2a/purple-agent
-        │
-        ├── PolicyEvaluator      ← deterministic rule engine
-        ├── MemoryCompressor     ← history summarization
-        ├── BenchmarkSolver      ← LLM call with constraints
-        └── OutputFormatter      ← structured output parser
-```
-
-See [docs/architecture.md](docs/architecture.md) for the full design.
-
-## Repository Structure
-
-```
-agent-purple/
-├── platform/
-│   ├── app/api/a2a/purple-agent/route.ts   ← A2A endpoint
-│   └── lib/a2a/benchmark-solver.ts         ← solver logic
-├── docs/
-│   └── architecture.md
-├── package.json
-└── README.md
-```
-
-## Running Locally
-
-```bash
-npm install
-cp .env.example .env.local   # add ANTHROPIC_API_KEY
-npm run dev
-```
-
-Endpoint: `http://localhost:3000/api/a2a/purple-agent`
-
-Health check: `GET /api/a2a/purple-agent`
-
-## Example Request
-
-```bash
-curl -X POST http://localhost:3000/api/a2a/purple-agent \
-  -H "Content-Type: application/json" \
-  -d '{
-    "task_id": "task-001",
-    "task": "List the G7 member countries.",
-    "expected_format": "list"
-  }'
-```
+### Request format (from benchmark)
 
 ```json
 {
-  "task_id": "task-001",
-  "answers": ["Canada", "France", "Germany", "Italy", "Japan", "United Kingdom", "United States"],
-  "metadata": {
-    "policy_compliant": true,
-    "policy_violations": [],
-    "applied_rules": [],
-    "memory_compressed": false,
-    "memory_summary": null
+  "jsonrpc": "2.0",
+  "method": "tasks/send",
+  "params": {
+    "id": "SESSION-ID",
+    "message": {
+      "role": "user",
+      "parts": [{ "text": "TASK DESCRIPTION" }]
+    },
+    "metadata": {
+      "policy_doc": "BUSINESS RULES",
+      "tools_endpoint": "https://benchmark.usebrainos.com/mcp",
+      "session_id": "SESSION-ID"
+    }
   }
 }
 ```
 
-## Competition Endpoint
+### Response format
 
-`https://purple.agentbench.usebrainos.com`
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "id": "SESSION-ID",
+    "status": { "state": "completed" },
+    "artifacts": [{ "parts": [{ "text": "FINAL ANSWER" }] }]
+  }
+}
+```
+
+---
+
+## Architecture
+
+```
+POST /
+  └── executor.handle_task()
+        ├── mcp_bridge.discover_tools()     ← GET tools for this session
+        ├── brainos_client.run_task()        ← try BrainOS SSE stream
+        │     └── on_tool_call()             ← forward tool calls to MCP endpoint
+        └── fallback_solver.solve_with_claude()  ← direct Claude SDK if BrainOS down
+              └── agentic tool-use loop (up to 20 iterations)
+```
+
+### Key design decisions
+
+- **BrainOS-first**: tasks route through the BrainOS copilot API (SSE stream). If unavailable, falls back automatically.
+- **Policy via system prompt**: `policy_doc` is injected into every Claude call as hard constraints.
+- **Tool discovery per session**: only tools registered for the current `session_id` are loaded — avoids overloading the context with 130+ tools.
+- **Agentic loop**: up to 20 tool-call iterations per task, covering multi-step business workflows.
+
+---
+
+## Running locally
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env
+python main.py --host 0.0.0.0 --port 9010 --card-url http://localhost:9010
+```
+
+---
+
+## Docker
+
+```bash
+docker build -t purple-agent .
+docker run -p 9010:9010 \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e BRAINOS_API_KEY=... \
+  -e BRAINOS_ORG_ID=... \
+  purple-agent
+```
+
+---
+
+## Source layout
+
+```
+purple-agent/
+├── main.py                 ← CLI entrypoint (--host, --port, --card-url)
+├── requirements.txt
+├── Dockerfile
+└── src/
+    ├── server.py           ← FastAPI app, all three endpoints
+    ├── executor.py         ← task orchestration (BrainOS → Claude fallback)
+    ├── brainos_client.py   ← BrainOS SSE streaming client
+    ├── fallback_solver.py  ← direct Claude SDK agentic loop
+    ├── mcp_bridge.py       ← tool discovery + tool calls
+    └── config.py           ← env-var config
+```
