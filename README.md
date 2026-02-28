@@ -5,22 +5,8 @@
 > **Purple Agent is a competition-focused distillation of the [BrainOS](https://usebrainos.com) AI Worker.**
 >
 > BrainOS runs AI Workers at enterprise scale. This is the same cognitive architecture —
-> FSM process engine, deterministic policy enforcement, HITL safety gate, financial arithmetic,
-> multi-turn memory — extracted into a standalone Python service for the AgentBeats benchmark.
-
----
-
-## What is a BrainOS AI Worker?
-
-A BrainOS AI Worker is a persistent, stateful business process agent that:
-- Has its own identity, memory, and conversation history (per worker, not per session)
-- Runs a cognitive planning loop (PRIME → EXECUTE → REFLECT) continuously
-- Enforces policy rules deterministically before taking any action
-- Gates irreversible mutations behind a HITL approval check
-- Learns from every task outcome via a reinforcement loop
-
-**Purple Agent is the mini version** — same architecture, zero infrastructure dependencies,
-designed for the benchmark's A2A task format.
+> FSM process engine, deterministic policy enforcement, HITL safety gate, cross-task memory,
+> financial arithmetic, self-reflection — extracted into a standalone Python service.
 
 ---
 
@@ -34,224 +20,179 @@ POST / (A2A, tasks/send)
        │
        ├── PHASE 1: PRIME
        │     ├─ Privacy guard (refuse before any cost)
-       │     ├─ RL primer (learned patterns from past tasks)
+       │     ├─ Training sync (S3 benchmark JSONL → RL seed, background)
+       │     ├─ Smart process classifier (Haiku semantic routing)
+       │     ├─ RL primer (case log patterns + benchmark intelligence)
+       │     ├─ Knowledge base (facts extracted from past tasks)
+       │     ├─ Entity memory (vendors/people/amounts seen before)
        │     ├─ Session context (Haiku-compressed history)
        │     ├─ FSM restore (resume state from prior turn)
        │     ├─ Policy parse (deterministic JSON rules)
-       │     └─ HITL gate check (build mutation block if APPROVAL_GATE)
+       │     └─ HITL gate check (mutation block at APPROVAL_GATE)
        │
        ├── PHASE 2: EXECUTE
        │     ├─ BrainOS SSE → Claude SDK fallback (20-iter agentic loop)
        │     ├─ Schema-resilient tool calls (fuzzy column matching + retry)
-       │     ├─ Paginated bulk fetch (cursor loop for 287+ record tasks)
-       │     └─ Approval brief generation if gate fires
+       │     ├─ Recovery agent (synonym → decompose → Haiku → graceful degrade)
+       │     ├─ Paginated bulk fetch (cursor loop for large datasets)
+       │     ├─ Output validation (required fields check per process type)
+       │     └─ Self-reflection (Haiku scores answer → improve if < 0.65)
        │
        └── PHASE 3: REFLECT
              ├─ FSM checkpoint save (next turn resumes here)
              ├─ Async Haiku compression (session > 20 turns)
-             ├─ RL outcome recording (quality → case_log.json)
-             └─ Competition answer format (process + policy + quality + duration)
+             ├─ RL outcome recording (BrainOS quality formula)
+             ├─ Knowledge extraction (Haiku → knowledge_base.json)
+             └─ Entity persistence (entity_memory.json)
 ```
+
+---
+
+## What Makes It Different
+
+| Capability | Most agents | This agent |
+|---|---|---|
+| **Process routing** | Keywords | Haiku semantic classifier |
+| **Cross-task memory** | None | Knowledge base + entity memory compound across all tasks |
+| **Tool failures** | Error out | 4-strategy auto-recovery (synonym → decompose → Haiku → degrade) |
+| **Answer quality** | Return as-is | Self-reflection: scores own answer, auto-improves if < 0.65 |
+| **Output completeness** | No check | Per-process required field validation (14 process types) |
+| **Financial math** | Floats | Integer cents, 6-decimal variance precision |
+| **Large datasets** | First page | Cursor-loop pagination (handles 287+ record tasks) |
+| **Policy gates** | None | Deterministic policy checker |
+| **Human approval** | None | HITL gate blocks mutation tools at APPROVAL_GATE state |
+| **Training** | Cold start | S3 benchmark JSONL seeds RL on startup |
+| **Learning** | None | RL quality loop + knowledge extraction after every task |
 
 ---
 
 ## 8-State Process FSM
 
-Every task is classified into a process type and run through a structured state machine:
+Every task is classified and run through a structured state machine:
 
 ```
 DECOMPOSE → ASSESS → COMPUTE → POLICY_CHECK → APPROVAL_GATE → MUTATE → SCHEDULE_NOTIFY → COMPLETE
-                                                                  ↑
-                                                     (error paths: ESCALATE, FAILED)
+                                                    │
+                                              (policy escalation)
+                                                    └─ ESCALATE
 ```
 
-| State | What happens |
-|-------|-------------|
-| `DECOMPOSE` | Identify process type, entities, required data |
-| `ASSESS` | Read-only tool calls — gather all data, no mutations |
-| `COMPUTE` | Financial math — no tools, pure calculation (proration, amortization, variance) |
-| `POLICY_CHECK` | Deterministic rule evaluation — zero LLM |
-| `APPROVAL_GATE` | **Mutation tools BLOCKED** — agent must present approval request |
-| `MUTATE` | All changes execute here — data collected, math done, approval received |
-| `SCHEDULE_NOTIFY` | Send notifications, schedule follow-ups, write audit log |
-| `COMPLETE` | Summary of all actions taken |
+**14 built-in process types** — each with per-state instructions (data layer, not hardcoded):
 
-**15 built-in process types:** expense approval, procurement, HR offboarding, incident response,
-invoice reconciliation, customer onboarding, compliance audit, dispute resolution, order management,
-SLA breach, month-end close, AR collections, subscription migration, payroll, general.
-
----
-
-## What Makes This Different
-
-| Capability | Most agents | Purple Agent |
-|------------|-------------|--------------|
-| Policy enforcement | Prompt-stuffed | Deterministic rule evaluator — `&&`/`\|\|`/`!`/`>`/`<`, zero LLM |
-| Irreversible actions | Call mutation tools immediately | APPROVAL_GATE blocks all mutation tools, forces approval summary |
-| Financial math | LLM estimation | Integer-cents arithmetic — proration, amortization, SLA credits, sub-limits |
-| Bulk data (287+ records) | First page only | Cursor-loop pagination, aggregates all pages |
-| Structured output | Free text | Auto-generates PRD/post-mortem/approval-brief/sprint-plan |
-| Multi-turn memory | None or full history | Haiku-compressed summaries, FSM state persists across turns |
-| Schema errors | Crash | Fuzzy column matching (difflib + Levenshtein) + retry |
-| Answer format | Prose | Auto-detects lists → `["Item1", "Item2"]` bracket format |
-| Privacy | None | Keyword refusal before any tool/DB call |
-| Token budget | Unlimited | 10K limit; Haiku at >80%; skip LLM at 100% |
-| Learning | Stateless | Quality scoring → `case_log.json` → primer injected next task |
-
----
-
-## Benchmark Task Coverage
-
-### Tasks 1–10 (Single-system business processes)
-All 10 task types are covered by the FSM process registry. Key patterns:
-
-- **Irreversible action gating** (Tasks 1, 7, 9): `APPROVAL_GATE` state + `hitl_guard.py` blocks mutation tools
-- **Multi-party approval routing** (Task 2): policy escalation levels (manager → VP → CFO → committee)
-- **Sequenced execution** (Task 3): `ASSESS` before `MUTATE`, `SCHEDULE_NOTIFY` for ordered notifications
-- **Partial approval with arithmetic** (Task 4): `financial_calculator.apply_sub_limit()` + rider logic
-- **Duplicate/entity detection** (Tasks 5, 8): paginated fetch + `deduplicate()` by key
-- **SLA credit calculation** (Task 6): `compute_sla_credit()` + `SCHEDULE_NOTIFY` for quiet-hours queuing
-- **Escalation detection** (Tasks 2, 3, 8, 10): `FSMState.ESCALATE` + structured escalation reason
-- **Boundary-case arithmetic** (Tasks 1, 4, 5, 6, 9): integer-cents math, 6-decimal variance precision
-
-### Tasks 11–15 (Multi-system orchestration)
-The `COMPUTE` state and `paginated_tools.py` unlock these:
-
-- **Month-end close** (Task 11): paginated_fetch (287 txns), `recognize_revenue()`, `straight_line_depreciation()`, `apply_variance_check()`
-- **Story→Jira→Sprint** (Task 12): `build_sprint_plan()` document template, dependency graph prompt
-- **AR collections** (Task 13): `amortize_loan()` payment plan, `paginated_fetch` + `group_by()` for aging buckets
-- **Incident RCA + rollback** (Task 14): `build_post_mortem()` template, APPROVAL_GATE for 2-person PCI approval
-- **QBR multi-audience** (Task 15): `build_document("qbr_slide")` with stakeholder-variant content
-
-### Tasks 16–20 (New domains)
-- **Payroll** (Task 16): `prorated_for_period()`, `amortize_loan()`, process type `payroll`
-- **Contract renewal** (Task 17): `build_document("contract_renewal")`, vendor risk assessment
-- **Bug triage** (Task 18): `incident_response` process type, `ESCALATE` on security bugs
-- **Budget planning** (Task 19): `apply_variance_check()` for growth thresholds, `APPROVAL_GATE`
-- **GDPR/CCPA** (Task 20): `compliance_audit` process type, `SCHEDULE_NOTIFY` for deadline tracking
-
----
-
-## A2A Request Format
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tasks/send",
-  "params": {
-    "id": "SESSION-001",
-    "message": {
-      "role": "user",
-      "parts": [{ "text": "Approve expense EXP-042 for Alice — $4,200 travel" }]
-    },
-    "metadata": {
-      "policy_doc": "{\"rules\":[{\"id\":\"R1\",\"condition\":\"amount > 5000\",\"action\":\"require_approval\",\"level\":\"manager\"}],\"context\":{\"amount\":4200}}",
-      "tools_endpoint": "https://benchmark.usebrainos.com/mcp",
-      "session_id": "SESSION-001"
-    }
-  }
-}
-```
-
-## Response Format
-
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "id": "SESSION-001",
-    "status": { "state": "completed" },
-    "artifacts": [{
-      "parts": [{
-        "text": "Expense EXP-042 approved for Alice.\n\n---\nProcess: Expense Approval\nPolicy: ✅ PASSED\nQuality: 0.87\nDuration: 1340ms"
-      }]
-    }]
-  }
-}
-```
+| Process | Key states |
+|---|---|
+| `expense_approval` | COMPUTE amounts → POLICY_CHECK limits → APPROVAL_GATE → MUTATE |
+| `invoice_reconciliation` | ASSESS 3-way match → COMPUTE variance → POLICY_CHECK → MUTATE |
+| `procurement` | ASSESS vendor → COMPUTE TCO → APPROVAL_GATE (tiered) → MUTATE |
+| `hr_offboarding` | ASSESS access → POLICY_CHECK → MUTATE (revoke all) → SCHEDULE_NOTIFY |
+| `payroll` | COMPUTE gross/net/deductions → APPROVAL_GATE → MUTATE (ACH) |
+| `compliance_audit` | COMPUTE control scores → APPROVAL_GATE → MUTATE (findings) |
+| `subscription_migration` | 5-checkpoint APPROVAL_GATE for destructive downgrades |
+| `ar_collections` | COMPUTE aging → POLICY_CHECK tier → MUTATE (notices/plans) |
+| `month_end_close` | COMPUTE P&L → CFO APPROVAL_GATE → MUTATE (period lock) |
+| `sla_breach` | COMPUTE credit → POLICY_CHECK → SCHEDULE_NOTIFY → ESCALATE |
+| `incident_response` | COMPUTE impact → APPROVAL_GATE → MUTATE (mitigation) |
+| `dispute_resolution` | ASSESS evidence → APPROVAL_GATE → MUTATE (credit/decline) |
+| `order_management` | COMPUTE totals → MUTATE (reserve + charge) |
+| `customer_onboarding` | MUTATE (provision) → SCHEDULE_NOTIFY (welcome) |
 
 ---
 
 ## Source Layout
 
 ```
-purple-agent/
-├── main.py                       ← CLI entry (--host, --port, --card-url)
-├── requirements.txt
-├── Dockerfile
-├── docs/
-│   └── architecture.md           ← Component deep-dive
-└── src/
-    │
-    │── COGNITIVE LOOP
-    ├── worker_brain.py           ← MiniAIWorker: PRIME→EXECUTE→REFLECT
-    ├── fsm_runner.py             ← 8-state FSM, 15 process types
-    │
-    │── SAFETY & POLICY
-    ├── hitl_guard.py             ← Mutation blocking at APPROVAL_GATE (Gap 1)
-    ├── privacy_guard.py          ← Keyword refusal before any tool call
-    ├── policy_checker.py         ← Deterministic rule evaluation (zero LLM)
-    │
-    │── DATA & COMPUTATION
-    ├── financial_calculator.py   ← Integer-cents arithmetic (Gap 4)
-    ├── paginated_tools.py        ← Cursor-loop bulk fetching (Gap 2)
-    ├── schema_adapter.py         ← Fuzzy column matching + retry
-    │
-    │── OUTPUT & MEMORY
-    ├── document_generator.py     ← PRD/post-mortem/brief templates (Gap 3)
-    ├── structured_output.py      ← Bracket format enforcement
-    ├── memory_compressor.py      ← Async Haiku compression
-    ├── session_context.py        ← Multi-turn history + FSM checkpoint
-    ├── token_budget.py           ← 10K budget, model switching, judge format
-    │
-    │── LEARNING
-    ├── rl_loop.py                ← Quality scoring → case_log.json → primer
-    │
-    │── INFRASTRUCTURE
-    ├── server.py                 ← FastAPI: /health, /agent-card, POST /
-    ├── brainos_client.py         ← BrainOS SSE streaming client
-    ├── fallback_solver.py        ← Direct Claude SDK loop (20 iterations)
-    ├── mcp_bridge.py             ← Tool discovery + tool calls
-    └── config.py                 ← Env-var config
+src/
+  worker_brain.py        ← MiniAIWorker: 3-phase cognitive loop (PRIME/EXECUTE/REFLECT)
+  fsm_runner.py          ← 8-state FSM engine (generic — reads from process_definitions)
+  process_definitions.py ← Per-process per-state instructions (DATA layer)
+
+  # Intelligence
+  smart_classifier.py    ← Haiku semantic process type detection
+  knowledge_extractor.py ← Post-task insight extraction → knowledge_base.json
+  entity_extractor.py    ← Regex entity persistence → entity_memory.json
+  rl_loop.py             ← Quality scoring + case log primer
+  memory_compressor.py   ← Haiku session compression (> 20 turns)
+  session_context.py     ← Multi-turn FSM + conversation state
+
+  # Safety & Policy
+  hitl_guard.py          ← Mutation tool blocking at APPROVAL_GATE
+  policy_checker.py      ← Deterministic policy rule evaluation
+  privacy_guard.py       ← PII/sensitive data early refuse
+
+  # Execution Quality
+  self_reflection.py     ← Pre-return answer scoring + auto-improve
+  output_validator.py    ← Per-process required field check
+  recovery_agent.py      ← 4-strategy tool failure recovery
+  schema_adapter.py      ← Fuzzy column name matching + retry
+
+  # Precision
+  financial_calculator.py← Integer-cents arithmetic (12 functions)
+  paginated_tools.py     ← Cursor-loop bulk data fetch
+  document_generator.py  ← Structured doc generation (9 types)
+  token_budget.py        ← 10K token budget, Haiku at 80%, skip at 100%
+  structured_output.py   ← Competition answer format
+
+  # Training (Wave 6)
+  training_loader.py     ← S3 JSONL download → RL seed
+  report_analyzer.py     ← S3 benchmark reports → benchmark_intelligence.json
+
+  # Infrastructure
+  brainos_client.py      ← BrainOS SSE (primary executor)
+  fallback_solver.py     ← Claude SDK (fallback, 20-iter agentic loop)
+  mcp_bridge.py          ← MCP tool discovery + call
+  config.py              ← Env vars
+  server.py              ← FastAPI A2A server + /health /rl/status /training/*
 ```
 
 ---
 
-## Running Locally
+## Quick Start
 
 ```bash
-pip install -r requirements.txt
+# 1. Set env vars (copy .env.example → .env)
 cp .env.example .env
-python main.py --host 0.0.0.0 --port 9010 --card-url http://localhost:9010
-```
+# Edit .env — set ANTHROPIC_API_KEY at minimum
 
-## Docker
-
-```bash
+# 2. Run
 docker build -t purple-agent .
-docker run -p 9010:9010 \
-  -e ANTHROPIC_API_KEY=sk-ant-... \
-  -e BRAINOS_API_KEY=... \
-  -e BRAINOS_ORG_ID=... \
-  purple-agent
+docker run -p 9010:9010 --env-file .env purple-agent
+
+# 3. Smoke test
+python scripts/smoke_test.py
+
+# 4. Test against live endpoint
+python scripts/smoke_test.py --url https://purple.agentbench.usebrainos.com
 ```
-
-## Environment Variables
-
-| Var | Purpose |
-|-----|---------|
-| `ANTHROPIC_API_KEY` | Claude fallback + Haiku compression |
-| `BRAINOS_API_KEY` | BrainOS primary execution path |
-| `BRAINOS_ORG_ID` | BrainOS workspace |
-| `BRAINOS_API_URL` | BrainOS endpoint (default: platform.usebrainos.com) |
-| `GREEN_AGENT_MCP_URL` | Default MCP tools endpoint |
 
 ---
 
-## Endpoints
+## A2A Protocol
 
-| What | URL | Method |
-|------|-----|--------|
-| Health | `/health` | GET |
-| Agent card | `/.well-known/agent-card.json` | GET |
-| A2A entry point | `/` | POST (JSON-RPC 2.0) |
+```bash
+curl -X POST http://localhost:9010/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tasks/send",
+    "params": {
+      "id": "task-001",
+      "message": {"parts": [{"text": "Process expense reimbursement of $350 for travel, John Smith, receipt attached."}]},
+      "metadata": {
+        "session_id": "session-abc",
+        "policy_doc": "{\"rules\": [{\"field\": \"amount\", \"operator\": \"lte\", \"value\": 500}]}",
+        "tools_endpoint": "http://benchmark-tools:9009"
+      }
+    }
+  }'
+```
+
+---
+
+## Monitoring
+
+```bash
+GET /health               # server status + training freshness
+GET /rl/status            # case log stats, quality distribution, recent outcomes
+GET /training/status      # seeded vs live cases, benchmark intelligence
+POST /training/sync       # force refresh from S3
+```

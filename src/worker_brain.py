@@ -45,6 +45,8 @@ from src.smart_classifier import classify_process_type   # Wave 8: LLM routing
 from src.knowledge_extractor import get_relevant_knowledge, extract_and_store  # Wave 8
 from src.entity_extractor import get_entity_context, record_task_entities       # Wave 8
 from src.recovery_agent import wrap_with_recovery                               # Wave 8
+from src.self_reflection import reflect_on_answer, build_improvement_prompt, should_improve  # Wave 9
+from src.output_validator import validate_output, get_missing_fields_prompt              # Wave 9
 
 
 def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
@@ -288,6 +290,58 @@ class MiniAIWorker:
                 risk_level="high",
             )
             answer = brief
+
+        # Wave 9: output validation — check required fields are present
+        if answer and not error:
+            validation = validate_output(answer, fsm.process_type)
+            if not validation["valid"] and validation["missing"]:
+                missing_prompt = get_missing_fields_prompt(
+                    validation["missing"], fsm.process_type
+                )
+                if missing_prompt and not self.budget.should_skip_llm:
+                    try:
+                        improved, extra_tools = await solve_with_claude(
+                            task_text=missing_prompt,
+                            policy_section=policy_section,
+                            policy_result=policy_result,
+                            tools=self._tools,
+                            on_tool_call=on_tool_call,
+                            session_id=self.session_id,
+                            model=self.budget.get_model(fsm.current_state.value, missing_prompt),
+                            max_tokens=512,
+                        )
+                        if improved and len(improved) > 50:
+                            answer = answer + "\n\n" + improved
+                            tool_count += extra_tools
+                    except Exception:
+                        pass
+
+        # Wave 9: self-reflection — score answer + improve if < threshold
+        if answer and not error and not self.budget.should_skip_llm:
+            reflection = await reflect_on_answer(
+                task_text=task_text,
+                answer=answer,
+                process_type=fsm.process_type,
+                tool_count=tool_count,
+            )
+            if should_improve(reflection):
+                improve_prompt = build_improvement_prompt(reflection, task_text)
+                try:
+                    improved, extra_tools = await solve_with_claude(
+                        task_text=improve_prompt,
+                        policy_section=policy_section,
+                        policy_result=policy_result,
+                        tools=self._tools,
+                        on_tool_call=on_tool_call,
+                        session_id=self.session_id,
+                        model=self.budget.get_model(fsm.current_state.value, task_text),
+                        max_tokens=600,
+                    )
+                    if improved and len(improved) > len(answer) * 0.3:
+                        answer = improved
+                        tool_count += extra_tools
+                except Exception:
+                    pass
 
         return answer, tool_count, error
 

@@ -69,24 +69,57 @@ def _extract_keywords(text: str) -> list[str]:
 
 def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> float:
     """
-    Heuristic quality 0–1, inspired by BrainOS computeAgentQuality().
-    Factors: answer completeness, agentic tool effort, policy adherence.
+    Quality score 0–1. Ported from BrainOS computeAgentQuality() Wave 9.
+    Conservative baseline 0.5 (matches BrainOS), then adjust by signals.
+
+    Penalizes:
+      - Empty data arrays: -0.25 (BrainOS rule)
+      - No tool calls: -0.10
+      - Short answers: -0.20 if < 50 chars
+      - Error phrases: -0.25
+      - Policy violation: -0.15
+
+    Rewards:
+      - Answer length and structure
+      - Tool usage depth
+      - Policy compliance
+      - Structured output markers
     """
-    score = 0.0
+    import re as _re
+    score = 0.50   # BrainOS conservative baseline
+
     length = len(answer.strip())
-    if length > 500:   score += 0.35
-    elif length > 200: score += 0.25
-    elif length > 50:  score += 0.15
+    if length > 800:    score += 0.20
+    elif length > 400:  score += 0.15
+    elif length > 150:  score += 0.08
+    elif length < 50:   score -= 0.20
 
-    if tool_count >= 5:   score += 0.35
-    elif tool_count >= 2: score += 0.25
-    elif tool_count >= 1: score += 0.15
+    if tool_count >= 5:   score += 0.15
+    elif tool_count >= 3: score += 0.10
+    elif tool_count >= 1: score += 0.05
+    elif tool_count == 0: score -= 0.10
 
-    if policy_passed is None: score += 0.20
-    elif policy_passed:       score += 0.30
-    # policy violated: +0
+    if policy_passed is True:    score += 0.15
+    elif policy_passed is False: score -= 0.15
+    # None = unknown, no adjustment
 
-    return min(1.0, score)
+    # BrainOS: empty data array penalty
+    if _re.search(r'"data"\s*:\s*\[\s*\]', answer): score -= 0.25
+    if _re.search(r'"results"\s*:\s*\[\s*\]', answer): score -= 0.15
+
+    # Structure reward
+    if any(m in answer.lower() for m in ["approved", "rejected", "completed", "decision:", "total:"]):
+        score += 0.08
+    if "{" in answer and "}" in answer:
+        score += 0.05
+
+    # Error phrase penalty
+    error_phrases = ["task failed", "unable to", "cannot access", "no data found",
+                     "token budget exhausted", "tool unavailable"]
+    if any(p in answer.lower() for p in error_phrases):
+        score -= 0.25
+
+    return round(max(0.0, min(1.0, score)), 3)
 
 
 def record_outcome(
