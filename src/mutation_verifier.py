@@ -56,6 +56,22 @@ _WRITE_VERBS = frozenset({
     "reverse",  # e.g. reverse_transaction
     "amend",    # e.g. amend_contract
     "patch",    # e.g. patch_record
+    # Additional write verbs: data operations
+    "replace",  # e.g. replace_item, replace_document
+    "upsert",   # e.g. upsert_record
+    "merge",    # e.g. merge_accounts
+    # Lifecycle / status-change verbs
+    "acknowledge",  # e.g. acknowledge_alert
+    "activate",     # e.g. activate_account
+    "deactivate",   # e.g. deactivate_user
+    "link",         # e.g. link_account
+    "unlink",       # e.g. unlink_device
+    "release",      # e.g. release_hold
+    "hold",         # e.g. hold_shipment
+    "authorize",    # e.g. authorize_payment
+    "confirm",      # e.g. confirm_shipment (NOT confirm_with_user — intercepted separately)
+    "extend",       # e.g. extend_lease, extend_deadline
+    "renew",        # e.g. renew_subscription, renew_contract
 })
 
 # These verb prefixes reliably identify read operations (skip these for write detection)
@@ -112,6 +128,21 @@ _WRITE_TO_READ_VERB: dict[str, str] = {
     "reverse": "get",
     "amend": "get",
     "patch": "get",
+    # Additional write verb → read verb mappings
+    "replace": "get",
+    "upsert": "get",
+    "merge": "get",
+    "acknowledge": "get",
+    "activate": "get",
+    "deactivate": "get",
+    "link": "get",
+    "unlink": "get",
+    "release": "get",
+    "hold": "get",
+    "authorize": "get",
+    "confirm": "get",
+    "extend": "get",
+    "renew": "get",
 }
 
 
