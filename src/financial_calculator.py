@@ -79,7 +79,8 @@ def compute_sla_credit(
     if downtime_mins <= sla_max_mins:
         return 0.0
     excess = downtime_mins - sla_max_mins
-    breach_count = math.ceil(excess / sla_max_mins)
+    # Guard against sla_max_mins=0 (100% SLA target) — any downtime = max 1 breach unit
+    breach_count = math.ceil(excess / sla_max_mins) if sla_max_mins > 0 else 1
     raw_pct = breach_count * credit_pct_per_breach
     applied_pct = min(raw_pct, cap_pct)
     return _d(round(_c(invoice_amount) * applied_pct / 100))

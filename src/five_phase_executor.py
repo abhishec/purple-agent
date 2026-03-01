@@ -241,6 +241,10 @@ async def _phase_artifact(synthesis: str, task_text: str) -> str:
     if not synthesis:
         return synthesis
 
+    # Bracket-format synthesis = exact_match target — never reformat via artifact phase
+    if synthesis.strip().startswith('['):
+        return synthesis
+
     artifact_system = (
         "You are a document formatter. Take the provided analysis and reformat it into a "
         "clean, professional deliverable. Rules:\n"

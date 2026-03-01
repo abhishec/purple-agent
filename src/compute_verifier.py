@@ -71,6 +71,10 @@ async def verify_compute_output(
     Fast-path: if answer has no numbers, or process type doesn't need it,
     returns clean result immediately (no API cost).
     """
+    # Fast-path: bracket-format = exact_match target, not a financial computation
+    if answer.strip().startswith('['):
+        return ComputeVerifyResult(False, 0.95, [], "")
+
     # Fast-path: no numeric content to verify
     numbers = _extract_numbers(answer)
     if not numbers or len(answer) < 100:

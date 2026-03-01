@@ -60,6 +60,9 @@ def _result_is_empty_due_to_drift(result: dict) -> bool:
     for key in _EMPTY_RESULT_KEYS:
         val = result.get(key)
         if val is not None and isinstance(val, (list, dict)) and len(val) == 0:
+            # Don't treat as drift if total/count says real data exists (filtered result)
+            if result.get("total", result.get("count", result.get("total_count", 0))) > 0:
+                continue
             return True
     return False
 

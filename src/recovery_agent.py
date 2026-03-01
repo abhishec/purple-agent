@@ -47,6 +47,9 @@ def _is_empty_result(result: Any) -> bool:
         for key in ("data", "items", "records", "rows", "list", "results"):
             val = result.get(key)
             if val is not None and isinstance(val, (list, dict)) and len(val) == 0:
+                # Don't treat as empty if total/count shows real data exists (filtered result)
+                if result.get("total", result.get("count", result.get("total_count", 0))) > 0:
+                    continue
                 return True
         if result == {} or result == {"status": "error"}:
             return True

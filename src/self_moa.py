@@ -348,7 +348,12 @@ async def numeric_moa_synthesize(
 
     Returns: synthesized/verified answer string, or initial_answer on failure
     """
-    # Only run for answers with numeric content
+    # Bracket-format answers are exact_match targets — never run numeric MoA on them.
+    # IDs like "INV-001" contain digits but are not financial calculations.
+    if initial_answer.strip().startswith('['):
+        return initial_answer
+
+    # Only run for answers with actual financial numeric content
     import re
     if not re.search(r'\d[\d,.]*', initial_answer):
         return initial_answer

@@ -207,9 +207,20 @@ def check_context_accuracy(
         "invoice_reconciliation", "procurement", "expense_approval"
     ):
         # Determine what we recommended
-        if "requires escalation: false" in ctx_lower or "does not exceed" in ctx_lower:
+        # finance_tools produces "within {threshold}% threshold → APPROVE" or
+        # "exceeds {threshold}% threshold → ESCALATE"
+        if (
+            "does not exceed" in ctx_lower
+            or "within" in ctx_lower
+            or "recommended action: approve" in ctx_lower
+            or "→ approve" in ctx_lower
+        ):
             we_said_approve = True
-        elif "requires escalation: true" in ctx_lower or "exceeds" in ctx_lower:
+        elif (
+            "requires escalation: true" in ctx_lower
+            or "escalate for approval" in ctx_lower
+            or ("exceeds" in ctx_lower and "within" not in ctx_lower)
+        ):
             we_said_approve = False
         else:
             we_said_approve = None

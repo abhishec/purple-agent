@@ -345,7 +345,7 @@ class MiniAIWorker:
             else:
                 # BrainOS returned empty — fall through to direct Claude execution
                 raise BrainOSUnavailableError("empty response from BrainOS")
-        except BrainOSUnavailableError:
+        except Exception:  # Catch ALL failures: BrainOS down, network error, empty response
             if not self.budget.should_skip_llm:
                 try:
                     # Wave 15: UCB1 bandit selects strategy based on past outcomes per process type
@@ -425,7 +425,8 @@ class MiniAIWorker:
                 pass
 
         # Gap 3: if we're at APPROVAL_GATE and answer looks thin, build a proper brief
-        if context.get("gate_fires") and answer and len(answer) < 200:
+        # Never replace bracket-format answers (exact_match targets) with a brief
+        if context.get("gate_fires") and answer and len(answer) < 200 and not answer.strip().startswith('['):
             brief = build_approval_brief(
                 process_type=context["fsm"].process_type,
                 proposed_actions=[answer],
@@ -492,9 +493,10 @@ class MiniAIWorker:
 
         # Wave 10: MoA synthesis — dual top_p for pure-reasoning tasks.
         # Skip if: BrainOS handled it (already synthesized), tools were used (data-dependent),
-        # or budget is exhausted.
+        # or budget is exhausted. Never run on bracket-format exact_match answers.
         if (answer and not error and not _brainos_handled
-                and tool_count == 0 and not self.budget.should_skip_llm):
+                and tool_count == 0 and not self.budget.should_skip_llm
+                and not answer.strip().startswith('[')):
             try:
                 moa_answer = await moa_quick(task_text, system_context)
                 if moa_answer and len(moa_answer) > len(answer) * 0.6:
@@ -505,7 +507,8 @@ class MiniAIWorker:
         # Wave 14: append mutation verification log LAST — after all answer processing.
         # This ensures MoA, COMPUTE correction, and reflection passes cannot discard it.
         # The log forces SQLite WAL checkpoint via read-backs and provides LLM judge evidence.
-        if verifier.mutation_count > 0:
+        # Never append to bracket-format answers (exact_match targets) — would corrupt score.
+        if verifier.mutation_count > 0 and not (answer or "").strip().startswith('['):
             answer = (answer or "") + verifier.build_verification_section()
 
         return answer, tool_count, error
@@ -581,7 +584,7 @@ class MiniAIWorker:
         duration_ms = int(time.time() * 1000) - start_ms
         fsm_summary = fsm.get_summary()
 
-        if fsm_summary.get("requires_hitl"):
+        if fsm_summary.get("requires_hitl") and not answer.strip().startswith('['):
             answer += f"\n\n[Process: {fsm.process_type} | Human approval required]"
 
         # format_final_answer was already applied in claude_executor.py (solve_with_claude).
