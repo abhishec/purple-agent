@@ -9,6 +9,7 @@ Key rules (from BrainOS):
 - formatCompetitionAnswer() → AgentX judge format (built in BrainOS for this exact competition)
 """
 from __future__ import annotations
+import json
 
 TASK_BUDGET = 10_000
 CHARS_PER_TOKEN = 4
@@ -39,6 +40,28 @@ COMPLEX_KEYWORDS = [
     "reconcile", "root cause", "diagnose", "analyze", "forecast",
     "synthesize", "cross-reference", "correlate", "investigate",
 ]
+
+
+def _is_bracket_format(answer: str) -> bool:
+    """
+    True only for JSON-array bracket format used in exact_match scoring.
+
+    Strict check: must start with '[', end with ']', AND parse as a JSON list.
+    Prose like "Rejected. [Reason: policy violation]" fails the endswith(']') check
+    or the json.loads() check, so it is correctly classified as prose.
+
+    Use this (not startswith('[')) wherever bracket-format detection affects
+    scoring, metadata injection, or reflection skipping.
+    """
+    s = answer.strip()
+    if not (s.startswith('[') and s.endswith(']')):
+        return False
+    try:
+        parsed = json.loads(s)
+        return isinstance(parsed, list)
+    except (json.JSONDecodeError, ValueError):
+        return False
+
 
 
 class TokenBudget:
@@ -114,12 +137,15 @@ class TokenBudget:
         return text[:max_chars] + f"\n[truncated: {self.remaining} tokens remaining]"
 
     def efficiency_hint(self) -> str:
-        """System prompt suffix — gets stricter as budget runs low."""
+        """System prompt suffix — gets stricter as budget runs low.
+        Always includes autonomy directive (never ask clarifying questions).
+        """
+        autonomy = " Never ask clarifying questions — make a reasonable assumption and proceed."
         pct = self.pct
-        if pct < 0.3:   return "\nBe concise."
-        if pct < 0.6:   return "\nBe very concise. One tool call per data need."
-        if pct < 0.80:  return "\nCRITICAL: Token budget low. Shortest complete answer only."
-        return "\nEMERGENCY: Budget nearly exhausted. One sentence answer max."
+        if pct < 0.3:   return "\nBe concise." + autonomy
+        if pct < 0.6:   return "\nBe very concise. One tool call per data need." + autonomy
+        if pct < 0.80:  return "\nCRITICAL: Token budget low. Shortest complete answer only." + autonomy
+        return "\nEMERGENCY: Budget nearly exhausted. One sentence answer max." + autonomy
 
     def report(self) -> dict:
         return {
@@ -149,7 +175,9 @@ def format_competition_answer(
 
     # Bracket-format answers are used in exact_match evaluation.
     # Adding metadata would break string comparison — return clean.
-    if answer_text.startswith('['):
+    # Use strict JSON-array check: prose like "Rejected. [Reason: ...]" must NOT
+    # skip metadata — only true bracket-format lists like ["INV-001"] should.
+    if _is_bracket_format(answer_text):
         return answer_text
 
     # Prose answers: append compact metadata for LLM judge context.
