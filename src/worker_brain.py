@@ -371,7 +371,10 @@ class MiniAIWorker:
                             model=model,
                             max_tokens=max_tokens,
                         )
-                        strategy = "fsm"
+                        # "moa" arm uses solve_with_claude + MoA post-processing (runs below).
+                        # Preserve "moa" strategy so bandit arm actually gets updated.
+                        if strategy not in ("moa",):
+                            strategy = "fsm"
                     context["_strategy_used"] = strategy
                 except Exception as e:
                     error = str(e)
