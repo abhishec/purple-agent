@@ -7,6 +7,8 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 
 from src.worker_brain import run_worker   # MiniAIWorker replaces executor directly
+from src.training_loader import seed_from_training_data, is_stale
+from src.report_analyzer import analyze_and_save, load_intelligence
 
 app = FastAPI(title="BrainOS Purple Agent", version="2.0.0")
 
@@ -32,6 +34,23 @@ AGENT_CARD = {
 }
 
 
+@app.on_event("startup")
+async def on_startup():
+    """
+    Background training seed on startup.
+    Seeds RL case log from S3/HTTP benchmark data so PRIME phase has learned patterns
+    from the first task (not just after the first benchmark round).
+    Non-blocking — agent serves requests immediately; seed runs in background thread.
+    """
+    import threading
+    def _seed():
+        try:
+            seed_from_training_data(force=False)
+        except Exception:
+            pass  # Never crash startup — agent runs degraded if seed fails
+    threading.Thread(target=_seed, daemon=True).start()
+
+
 @app.get("/.well-known/agent-card.json")
 async def agent_card():
     return JSONResponse(AGENT_CARD)
@@ -46,8 +65,14 @@ async def health():
 async def a2a_handler(request: Request):
     body = await request.json()
 
+    # JSON-RPC 2.0: correlation id lives at top level of request
+    jsonrpc_id = body.get("id")
+
     if body.get("method") != "tasks/send":
-        raise HTTPException(400, "Only tasks/send method supported")
+        return JSONResponse({
+            "jsonrpc": "2.0", "id": jsonrpc_id,
+            "error": {"code": -32601, "message": "Method not found"},
+        })
 
     params = body.get("params", {})
     task_id = params.get("id", str(uuid.uuid4()))
@@ -59,22 +84,31 @@ async def a2a_handler(request: Request):
     tools_endpoint = metadata.get("tools_endpoint", "")
     session_id = metadata.get("session_id", task_id)
 
-    answer = await run_worker(
-        task_text=task_text,
-        policy_doc=policy_doc,
-        tools_endpoint=tools_endpoint,
-        task_id=task_id,
-        session_id=session_id,
-    )
+    try:
+        answer = await run_worker(
+            task_text=task_text,
+            policy_doc=policy_doc,
+            tools_endpoint=tools_endpoint,
+            task_id=task_id,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        # Return JSON-RPC error (not 500 HTML) so benchmark evaluator can parse it
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": jsonrpc_id,
+            "error": {"code": -32603, "message": f"Internal error: {exc}", "data": None},
+        })
 
-    return {
+    return JSONResponse({
         "jsonrpc": "2.0",
+        "id": jsonrpc_id,   # required by JSON-RPC 2.0 spec
         "result": {
             "id": task_id,
             "status": {"state": "completed"},
             "artifacts": [{"parts": [{"text": answer}]}],
         },
-    }
+    })
 
 
 @app.get("/rl/status")
@@ -166,10 +200,56 @@ async def rl_status():
         pass
 
     return {
+        # Top-level aliases for smoke test / legacy clients
+        "status": "ok",
+        "total_cases": case_stats.get("total", 0),
+        "avg_quality": case_stats.get("avg_quality", 0.0),
+        # Namespaced detail
         "case_log": case_stats,
         "knowledge_base": kb_stats,
         "entity_memory": entity_stats,
     }
+
+
+@app.get("/training/status")
+async def training_status():
+    """S3 training seed status — was the case log primed from benchmark data?"""
+    base_dir = os.path.join(os.path.dirname(__file__), "..")
+    seeded_marker = os.path.join(base_dir, ".training_seeded")
+    stale = True
+    try:
+        stale = is_stale()
+    except Exception:
+        pass
+    intel: dict = {}
+    try:
+        intel = load_intelligence()
+    except Exception:
+        pass
+    return {
+        "status": "ok",
+        "seeded": os.path.exists(seeded_marker),
+        "stale": stale,
+        "benchmark_intelligence": intel,
+    }
+
+
+@app.post("/training/sync")
+async def training_sync():
+    """Force refresh from S3 / HTTP benchmark endpoint."""
+    results: dict = {}
+    try:
+        seed_result = seed_from_training_data(force=True)
+        results["seed"] = seed_result
+    except Exception as e:
+        results["seed_error"] = str(e)
+    try:
+        analyze_result = analyze_and_save(force=True)
+        results["analyze"] = analyze_result
+    except Exception as e:
+        results["analyze_error"] = str(e)
+    results["status"] = "ok" if not any("error" in k for k in results) else "partial"
+    return results
 
 
 def _compute_growth_rate(base_dir: str) -> str:

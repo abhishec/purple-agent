@@ -17,6 +17,7 @@ Falls back to keyword matching if Haiku unavailable or times out.
 from __future__ import annotations
 import asyncio
 import json
+import re
 import time
 
 from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL
@@ -86,7 +87,12 @@ async def _call_classifier(task_text: str) -> tuple[str, float]:
         messages=[{"role": "user", "content": task_text[:500]}],
     )
     text = resp.content[0].text if resp.content else ""
-    parsed = json.loads(text)
+    # Strip markdown fences that Haiku sometimes prepends (```json ... ```)
+    clean = text.strip()
+    if clean.startswith("```"):
+        clean = re.sub(r"^```[a-z]*\n?", "", clean)
+        clean = re.sub(r"\n?```$", "", clean).strip()
+    parsed = json.loads(clean)
     ptype = parsed.get("process_type", "general")
     conf = float(parsed.get("confidence", 0.7))
     # Trust whatever Haiku returns — only reject if falsy/None/empty string.

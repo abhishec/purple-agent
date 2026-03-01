@@ -247,7 +247,7 @@ async def _call_haiku_extract(task_text: str, answer: str, domain: str) -> list[
         )
         text = resp.content[0].text if resp.content else ""
         # Bug C fix: use re.DOTALL so '.' matches newlines in multi-line JSON arrays
-        m = re.search(r'\[.*?\]', text, re.DOTALL)
+        m = re.search(r'\[.*\]', text, re.DOTALL)  # greedy: capture outermost array
         if m:
             insights = json.loads(m.group())
             if isinstance(insights, list):

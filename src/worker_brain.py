@@ -50,6 +50,7 @@ from src.self_reflection import reflect_on_answer, build_improvement_prompt, sho
 from src.output_validator import validate_output, get_missing_fields_prompt              # Wave 9
 from src.self_moa import quick_synthesize as moa_quick                                   # Wave 10
 from src.five_phase_executor import five_phase_execute, should_use_five_phase            # Wave 10
+from src.finance_tools import FINANCE_TOOL_DEFINITIONS, call_finance_tool, is_finance_tool  # Wave 10: integer-cent precision
 
 
 def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
@@ -83,6 +84,7 @@ class MiniAIWorker:
         self.budget = TokenBudget()
         self._tools: list[dict] = []
         self._ep: str = ""
+        self._api_calls: int = 0   # total LLM API calls this task (cost guard)
 
     async def run(
         self,
@@ -161,6 +163,8 @@ class MiniAIWorker:
             self._tools = await discover_tools(self._ep, session_id=self.session_id)
         except Exception:
             self._tools = []
+        # Inject synthetic finance tools — always available, zero MCP cost
+        self._tools = self._tools + FINANCE_TOOL_DEFINITIONS
 
         # Gap 1: HITL gate — check if we should block mutations at APPROVAL_GATE
         gate_fires, hitl_prompt = check_approval_gate(
@@ -249,6 +253,9 @@ class MiniAIWorker:
             return await _direct_call(tool_name, params)
 
         async def _direct_call(tool_name: str, params: dict) -> dict:
+            # Finance tools run locally — zero MCP round-trip, integer-cent precision
+            if is_finance_tool(tool_name):
+                return call_finance_tool(tool_name, params)
             try:
                 return await call_tool(self._ep, tool_name, params, self.session_id)
             except Exception as e:
@@ -257,6 +264,7 @@ class MiniAIWorker:
         answer = ""
         tool_count = 0
         error = None
+        _brainos_handled = False
 
         try:
             answer = await run_task(
@@ -265,6 +273,7 @@ class MiniAIWorker:
                 on_tool_call=on_tool_call,
                 session_id=self.session_id,
             )
+            _brainos_handled = True
         except BrainOSUnavailableError:
             if not self.budget.should_skip_llm:
                 try:
@@ -356,9 +365,11 @@ class MiniAIWorker:
                 except Exception:
                     pass
 
-        # Wave 10: MoA synthesis — dual top_p for pure-reasoning tasks (no tools)
-        # For tool-heavy tasks MoA can't add value (lacks gathered data), so skip.
-        if answer and not error and tool_count == 0 and not self.budget.should_skip_llm:
+        # Wave 10: MoA synthesis — dual top_p for pure-reasoning tasks on fallback path.
+        # Skip if: BrainOS handled it (already synthesized), tools were used (data-dependent),
+        # or budget is exhausted.
+        if (answer and not error and not _brainos_handled
+                and tool_count == 0 and not self.budget.should_skip_llm):
             try:
                 moa_answer = await moa_quick(task_text, system_context)
                 if moa_answer and len(moa_answer) > len(answer) * 0.6:

@@ -22,14 +22,16 @@ MODELS = {
 
 # FSM state → default model tier (mirrors BrainOS token-budget.ts)
 STATE_MODEL = {
-    "DECOMPOSE":     "haiku",   # classification phase — haiku is fast enough
-    "ASSESS":        "haiku",   # data gathering — haiku + full tokens is sufficient
-    "POLICY_CHECK":  "haiku",   # deterministic anyway
-    "APPROVAL_GATE": "haiku",   # summarize for human
-    "EXECUTE":       "sonnet",  # actual work
-    "COMPLETE":      "haiku",   # final summary
-    "ESCALATE":      "haiku",   # refusal message
-    "FAILED":        "haiku",   # error message
+    "DECOMPOSE":       "haiku",   # classification phase — fast enough
+    "ASSESS":          "haiku",   # data gathering — haiku + full tokens
+    "COMPUTE":         "sonnet",  # financial math + analytical work needs reasoning
+    "POLICY_CHECK":    "haiku",   # deterministic rule evaluation
+    "APPROVAL_GATE":   "haiku",   # summarize for human
+    "MUTATE":          "sonnet",  # actual data writes + complex decisions (was EXECUTE)
+    "SCHEDULE_NOTIFY": "haiku",   # notification formatting
+    "COMPLETE":        "haiku",   # final summary
+    "ESCALATE":        "haiku",   # refusal message
+    "FAILED":          "haiku",   # error message
 }
 
 # Complex keywords → force Sonnet even in EXECUTE

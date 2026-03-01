@@ -25,10 +25,9 @@ PRIVACY_KEYWORDS = [
     "credit card", "card number", "cvv", "bank account", "routing number",
     "medical record", "health record", "phi", "hipaa",
     "personal health", "diagnosis", "prescription",
-    "private information", "confidential", "internal only",
-    "not for distribution", "restricted",
+    "private information", "internal only",
+    "not for distribution",
     "home address", "personal address",
-    "salary details", "compensation data", "internal salary",
     "date of birth", " dob ",
 ]
 
@@ -37,6 +36,11 @@ SAFE_CONTEXTS = [
     "anonymized", "aggregated", "redacted", "masked",
     "hashed", "encrypted at rest", "tokenized",
     "sample data", "test data", "dummy data", "mock",
+    # Business process contexts — never refuse these
+    "process payroll", "run payroll", "payroll for",
+    "compliance audit", "compliance report",
+    "salary adjustment", "salary range", "compensation review",
+    "internal controls", "restricted-access controls",
 ]
 
 
