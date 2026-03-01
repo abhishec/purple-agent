@@ -164,6 +164,12 @@ jobs:
     if: always() && needs.deploy.result == 'success'
 
     steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::848269696611:role/agentbench-github-deploy
+          aws-region: us-east-1
+
       - name: Run benchmark — task_06 + task_24
         run: |
           echo "🧪 Smoke test via green judge..."
