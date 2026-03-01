@@ -138,14 +138,16 @@ class TokenBudget:
 
     def efficiency_hint(self) -> str:
         """System prompt suffix — gets stricter as budget runs low.
-        Always includes autonomy directive (never ask clarifying questions).
+        Always includes autonomy directive (never ask clarifying questions)
+        and execution reminder (must call action tools, not just analyze).
         """
         autonomy = " Never ask clarifying questions — make a reasonable assumption and proceed."
+        execute = " Reminder: EXECUTE all required action tools before responding. Analysis alone is not completion."
         pct = self.pct
-        if pct < 0.3:   return "\nBe concise." + autonomy
-        if pct < 0.6:   return "\nBe very concise. One tool call per data need." + autonomy
-        if pct < 0.80:  return "\nCRITICAL: Token budget low. Shortest complete answer only." + autonomy
-        return "\nEMERGENCY: Budget nearly exhausted. One sentence answer max." + autonomy
+        if pct < 0.3:   return "\nBe concise." + autonomy + execute
+        if pct < 0.6:   return "\nBe very concise. One tool call per data need." + autonomy + execute
+        if pct < 0.80:  return "\nCRITICAL: Token budget low. Shortest complete answer only." + autonomy + execute
+        return "\nEMERGENCY: Budget nearly exhausted. One sentence answer max." + autonomy + execute
 
     def report(self) -> dict:
         return {
