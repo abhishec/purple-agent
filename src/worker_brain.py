@@ -138,13 +138,17 @@ class MiniAIWorker:
             if "destination" in params and "target_type" not in params:
                 params["target_type"] = params.pop("destination")
 
-        # Generic: any modify_*/update_* tool where Claude sends item_id but we need id
-        if (
-            any(tool_name.startswith(v) for v in ("modify_", "update_"))
-            and "item_id" in params
-            and "id" not in params
-        ):
-            params["id"] = params.pop("item_id")
+        # Generic item_id → id for any write-verb tool that receives item_id but not id
+        _ITEM_ID_TOOLS = {"modify_", "update_", "cancel_", "remove_", "delete_", "create_", "add_", "process_"}
+        if any(tool_name.startswith(v) for v in _ITEM_ID_TOOLS):
+            if "item_id" in params and "id" not in params:
+                params["id"] = params.pop("item_id")
+            # Also: object_id → id (common in green agent tools)
+            if "object_id" in params and "id" not in params:
+                params["id"] = params.pop("object_id")
+            # record_id → id
+            if "record_id" in params and "id" not in params:
+                params["id"] = params.pop("record_id")
 
         return params
 
@@ -174,6 +178,21 @@ class MiniAIWorker:
                                 "description": "Unit price for this item",
                             }
                             del item_props["price"]
+                except (KeyError, TypeError):
+                    pass
+                patched.append(t)
+            elif name == "process_payment_adjustment":
+                t = copy.deepcopy(tool)
+                try:
+                    props = t["input_schema"]["properties"]
+                    # Fix direction → target_id
+                    if "direction" in props and "target_id" not in props:
+                        props["target_id"] = {"type": "string", "description": "Target entity ID for the payment adjustment"}
+                        del props["direction"]
+                    # Fix destination → target_type
+                    if "destination" in props and "target_type" not in props:
+                        props["target_type"] = {"type": "string", "description": "Target entity type (e.g. customer, account)"}
+                        del props["destination"]
                 except (KeyError, TypeError):
                     pass
                 patched.append(t)

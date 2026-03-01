@@ -146,6 +146,25 @@ _WRITE_TO_READ_VERB: dict[str, str] = {
 }
 
 
+# Override table: known write→read pairs where inference would get the wrong name
+_WRITE_TO_READ_OVERRIDE: dict[str, str] = {
+    "modify_order_items":           "get_order",
+    "process_payment_adjustment":   "get_payment_adjustment",
+    "update_order_items":           "get_order",
+    "cancel_order":                 "get_order",
+    "create_order":                 "get_order",
+    "approve_invoice":              "get_invoice",
+    "reject_invoice":               "get_invoice",
+    "update_invoice":               "get_invoice",
+    "process_refund":               "get_refund",
+    "apply_credit":                 "get_credit",
+    "void_invoice":                 "get_invoice",
+    "close_ticket":                 "get_ticket",
+    "resolve_ticket":               "get_ticket",
+    "assign_ticket":                "get_ticket",
+}
+
+
 def _infer_read_tool(write_tool: str) -> str | None:
     """
     Infer the corresponding read tool from a write tool name.
@@ -155,6 +174,10 @@ def _infer_read_tool(write_tool: str) -> str | None:
       create_order            → get_order
       revoke_access           → get_access  OR  check_access
     """
+    # Check override table first (known pairs where inference gets it wrong)
+    if write_tool in _WRITE_TO_READ_OVERRIDE:
+        return _WRITE_TO_READ_OVERRIDE[write_tool]
+
     parts = write_tool.split("_")
     if not parts:
         return None
