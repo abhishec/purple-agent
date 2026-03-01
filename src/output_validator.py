@@ -97,12 +97,45 @@ UNIVERSAL_REQUIRED = [
     ("summary",   ["summary", "completed", "result", "outcome", "in summary", "to summarize"]),
 ]
 
+# Synthesized / unknown process type: these fields indicate a complete business answer.
+# When a process_type is not in REQUIRED_OUTPUTS, we validate these instead of silently
+# skipping validation (the original bug — unknown types got no validation at all).
+#
+# Fix (HIGH): Previously, REQUIRED_OUTPUTS.get(process_type, []) returned [] for any
+# novel process type. Only UNIVERSAL_REQUIRED ("summary") was checked.
+# Result: a malformed or empty answer could return valid=True, score=1.0 for novel types,
+# meaning missing fields were never detected and self_reflection never triggered a retry.
+#
+# Fix: Unknown types get a set of cross-domain "business answer" fields that any
+# complete business process outcome should contain. These are intentionally broad
+# (not process-specific) so they add real signal without over-constraining novel types.
+SYNTHESIZED_REQUIRED: list[tuple[str, list[str]]] = [
+    ("decision_or_status", [
+        "approved", "rejected", "completed", "resolved", "processed",
+        "escalated", "pending", "failed", "success", "done",
+    ]),
+    ("action_taken", [
+        "action", "executed", "performed", "updated", "created", "sent",
+        "notified", "scheduled", "applied", "recorded",
+    ]),
+    ("key_entity", [
+        r'\b[A-Z]{2,}-\d+\b',   # ticket/order IDs like ORD-123, TKT-456
+        r'\$[\d,]+',              # any dollar amount
+        r'\b\d{4}-\d{2}-\d{2}\b', # any date
+        "invoice", "order", "request", "ticket", "account", "customer", "vendor",
+    ]),
+]
+
 
 def validate_output(answer: str, process_type: str) -> dict:
     """
     Check if the answer contains required output fields for this process type.
     Returns {valid: bool, missing: list[str], present: list[str], score: float}
     Zero API cost — pure string matching.
+
+    Fix: Novel/synthesized process types now get SYNTHESIZED_REQUIRED validation
+    instead of an empty required list. This ensures self_reflection detects
+    incomplete answers for unknown process types.
     """
     # Bracket-format answers are exact_match targets — field validation doesn't apply.
     # Running improvement passes on them would corrupt the bracket format.
@@ -110,7 +143,15 @@ def validate_output(answer: str, process_type: str) -> dict:
         return {"valid": True, "coverage": 1.0, "present": [], "missing": [], "score": 1.0}
 
     answer_lower = answer.lower()
-    required = REQUIRED_OUTPUTS.get(process_type, []) + UNIVERSAL_REQUIRED
+
+    process_specific = REQUIRED_OUTPUTS.get(process_type)
+    if process_specific is not None:
+        # Known process type — use its specific required fields
+        required = process_specific + UNIVERSAL_REQUIRED
+    else:
+        # Unknown / synthesized process type — use cross-domain business answer fields.
+        # This replaces the original [] fallback that caused silent under-validation.
+        required = SYNTHESIZED_REQUIRED + UNIVERSAL_REQUIRED
 
     present, missing = [], []
 
