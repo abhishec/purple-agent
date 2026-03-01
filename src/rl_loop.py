@@ -104,7 +104,12 @@ def _has_structured_completion(answer: str) -> bool:
     return any(m in answer_lower for m in _COMPLETION_MARKERS)
 
 
-def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> float:
+def score_quality(
+    answer: str,
+    tool_count: int,
+    policy_passed: bool | None,
+    mutation_verified: bool | None = None,
+) -> float:
     """
     Quality score 0–1. Ported from BrainOS computeAgentQuality().
     Conservative baseline 0.5 (matches BrainOS), then adjust by signals.
@@ -115,12 +120,14 @@ def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> f
       - Short answers: -0.20 if < 50 chars (EXCEPT bracket format exact_match answers)
       - Error phrases: -0.25
       - Policy violation: -0.15
+      - mutation_verified=False: -0.15 (writes called but none confirmed — WAL risk)
 
     Rewards:
       - Answer length and structure
       - Tool usage depth
       - Policy compliance
       - Structured output markers
+      - mutation_verified=True: +0.10 (verified write = closer to judge functional=1)
     """
     score = 0.50   # BrainOS conservative baseline
 
@@ -164,6 +171,15 @@ def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> f
                      "token budget exhausted", "tool unavailable"]
     if any(p in answer.lower() for p in error_phrases):
         score -= 0.25
+
+    # Mutation verification signal — bridges internal quality to judge functional score.
+    # mutation_verified=True means a write tool was called AND read-back confirmed the change.
+    # mutation_verified=False means writes were attempted but no read-back succeeded (WAL risk).
+    # mutation_verified=None means no writes were attempted (read-only task or MoA), no adjustment.
+    if mutation_verified is True:
+        score += 0.10
+    elif mutation_verified is False:
+        score -= 0.15
 
     return round(max(0.0, min(1.0, score)), 3)
 
@@ -292,10 +308,11 @@ def record_outcome(
     policy_passed: bool | None = None,
     error: str | None = None,
     domain: str = "",
+    mutation_verified: bool | None = None,
 ) -> float:
     """Record task outcome. Returns quality score (dopamine if >=0.6, gaba if <0.6)."""
     cases = _load_cases()
-    quality = score_quality(answer, tool_count, policy_passed)
+    quality = score_quality(answer, tool_count, policy_passed, mutation_verified)
     outcome = "success" if quality >= 0.6 else ("failure" if error else "partial")
     case_id = hashlib.md5(f"{task_text[:50]}{time.time()}".encode()).hexdigest()[:8]
 

@@ -843,6 +843,16 @@ class MiniAIWorker:
         if verifier.mutation_count > 0 and not (answer or "").strip().startswith('['):
             answer = (answer or "") + verifier.build_verification_section()
 
+        # Store mutation verification state in context for REFLECT phase RL scoring.
+        # mutation_verified=True if any write was confirmed via read-back,
+        # False if writes happened but no read-back succeeded, None if no writes at all.
+        mc = verifier.mutation_count
+        vc = verifier.verified_count
+        if mc > 0:
+            context["_mutation_verified"] = vc > 0
+        else:
+            context["_mutation_verified"] = None
+
         return answer, tool_count, error
 
     # ── REFLECT ───────────────────────────────────────────────────────────
@@ -880,8 +890,10 @@ class MiniAIWorker:
         # Gap 2 (async Haiku compression) — upgrade inline dump to real LLM summary
         await maybe_compress_async(self.session_id)
 
-        # RL outcome recording
+        # RL outcome recording — include mutation verification signal to bridge
+        # internal quality score to the judge's functional correctness metric.
         policy_passed = policy_result.get("passed") if policy_result else None
+        mutation_verified = context.get("_mutation_verified")  # set by _execute()
         quality = record_outcome(
             task_text=task_text,
             answer=answer,
@@ -889,6 +901,7 @@ class MiniAIWorker:
             policy_passed=policy_passed,
             error=error,
             domain=fsm.process_type,
+            mutation_verified=mutation_verified,
         )
 
         # UCB1 bandit outcome — feed quality back to strategy bandit

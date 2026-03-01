@@ -11,7 +11,7 @@ from src.training_loader import seed_from_training_data, is_stale
 from src.context_rl import get_context_stats
 from src.dynamic_fsm import get_synthesis_stats
 from src.dynamic_tools import seed_amortization_tool, get_tool_registry_stats
-from src.strategy_bandit import get_stats as get_bandit_stats
+from src.strategy_bandit import get_stats as get_bandit_stats, ensure_warmed as bandit_warm
 from src.report_analyzer import analyze_and_save, load_intelligence
 
 app = FastAPI(title="BrainOS Purple Agent", version="5.0.0")
@@ -50,6 +50,14 @@ async def on_startup():
     # This migrates it from hardcoded finance_tools.py to the persistent registry.
     # All future tasks get it from the registry — zero hardcoded tools remaining.
     seed_amortization_tool()
+
+    # Pre-seed the strategy bandit with domain priors on every startup.
+    # Ensures the bandit JSON is persisted immediately so cold-start exploration
+    # never happens — first task always goes to the best-prior strategy.
+    try:
+        bandit_warm()
+    except Exception:
+        pass  # Non-blocking — agent runs fine without this
 
     import threading
     def _seed():

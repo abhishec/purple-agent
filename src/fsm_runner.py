@@ -381,7 +381,13 @@ class FSMRunner:
             lines.append(f"{step}. CONFIRM: Call confirm_with_user (it auto-confirms — returns 'ok' immediately)")
             step += 1
         if task_type == "full":
-            lines.append(f"{step}. MUTATE: Call the required action tools — approve_*/reject_*/update_*/cancel_*/process_*/credit_*/refund_*/flag_*/escalate_*/deactivate_*/revoke_*")
+            lines.append(
+                f"{step}. MUTATE — NOW EXECUTE: Call EVERY required action tool "
+                f"(approve_*/reject_*/update_*/cancel_*/process_*/credit_*/refund_*/"
+                f"flag_*/escalate_*/deactivate_*/revoke_*). "
+                f"Do NOT write 'I would approve...' or 'The system should...' — "
+                f"CALL THE TOOL DIRECTLY. Required action = required tool call."
+            )
             step += 1
         if has_notify:
             lines.append(f"{step}. NOTIFY: Call send_*/notify_*/post_*/draft_* notification tools")

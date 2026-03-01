@@ -137,6 +137,11 @@ def _is_chained_mutation_task(task_text: str) -> bool:
     return any(p in text for p in _SEQUENTIAL_PATTERNS)
 
 
+# Preferred order when exploring unvisited arms (n=0 after warm-start reset or novel type).
+# fsm first (safest default), moa second (pure reasoning fallback), five_phase last (complex).
+_EXPLORE_ORDER = ("fsm", "moa", "five_phase")
+
+
 def select_strategy(process_type: str, task_text: str = "") -> str:
     """
     Return the UCB1-optimal strategy for this process type.
@@ -146,6 +151,7 @@ def select_strategy(process_type: str, task_text: str = "") -> str:
     - five_phase blocked for chained-mutation types (sequential tool dependencies)
     - moa blocked when tools are expected (MoA is for pure reasoning only)
 
+    Exploration order (when arms are unvisited): fsm → moa → five_phase
     task_text is used for heuristic guards.
     """
     _load()
@@ -173,14 +179,21 @@ def select_strategy(process_type: str, task_text: str = "") -> str:
 
     N_total = sum(d["n"] for d in arms.values())
 
+    # Collect unvisited eligible arms and return the first in preferred exploration order.
+    # Pre-seeding means this rarely fires, but handles novel types or reset states.
+    unvisited = [s for s in eligible if arms[s]["n"] == 0]
+    if unvisited:
+        for preferred in _EXPLORE_ORDER:
+            if preferred in unvisited:
+                return preferred
+        return unvisited[0]  # fallback if _EXPLORE_ORDER doesn't cover the eligible set
+
     best_score = -1.0
     best_arm = "fsm"
     for strategy in eligible:
         data = arms[strategy]
         q = data["q"]
         n = data["n"]
-        if n == 0:
-            return strategy  # unvisited eligible arm → explore it first
         ucb1 = q + _C * math.sqrt(math.log(max(N_total, 1)) / n)
         if ucb1 > best_score:
             best_score = ucb1
@@ -203,6 +216,21 @@ def record_outcome(process_type: str, strategy: str, quality: float) -> None:
     data["n"] += 1
     # Incremental mean
     data["q"] = data["q"] + (quality - data["q"]) / data["n"]
+    _save()
+
+
+def ensure_warmed() -> None:
+    """
+    Initialize all known process types from priors and persist to disk.
+    Called on server startup so the bandit file is pre-seeded immediately,
+    not just lazily on first select_strategy() call.
+    Idempotent — only adds missing process types, never overwrites learned values
+    (i.e., previously learned Q/n are preserved).
+    """
+    _load()
+    for pt in _PRIORS:
+        if pt not in _state:
+            _arms(pt)   # triggers _PRIORS initialization for this type
     _save()
 
 
