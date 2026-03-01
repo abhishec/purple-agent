@@ -262,7 +262,8 @@ class MiniAIWorker:
         context_parts.append(self.budget.efficiency_hint())
 
         system_context = "\n\n".join(context_parts)
-        self.budget.consume(system_context, "system_context")
+        # Note: individual components were already consumed above.
+        # Do NOT consume system_context again — that would double-count the budget.
 
         return {
             "refused": False,
@@ -339,7 +340,11 @@ class MiniAIWorker:
                 on_tool_call=on_tool_call,
                 session_id=self.session_id,
             )
-            _brainos_handled = True
+            if answer:
+                _brainos_handled = True
+            else:
+                # BrainOS returned empty — fall through to direct Claude execution
+                raise BrainOSUnavailableError("empty response from BrainOS")
         except BrainOSUnavailableError:
             if not self.budget.should_skip_llm:
                 try:
@@ -375,13 +380,9 @@ class MiniAIWorker:
             else:
                 answer = "Token budget exhausted. Task incomplete."
 
-        # Wave 14: append mutation verification log — forces SQLite WAL flush on read-backs
-        # and gives LLM judge explicit evidence of correct mutation behavior
-        if verifier.mutation_count > 0:
-            answer = (answer or "") + verifier.build_verification_section()
-
         # Wave 15: COMPUTE math reflection gate — catch arithmetic errors before MUTATE
         # Runs a fast Haiku critique of any numeric values in the answer.
+        # Run BEFORE mutation log append so corrections don't discard log.
         if answer and not error and not self.budget.should_skip_llm:
             try:
                 verify_result = await verify_compute_output(
@@ -409,7 +410,7 @@ class MiniAIWorker:
 
         # Wave 15: Numeric MoA — dual top_p synthesis for financial answer validation
         # Runs when the answer has tool results (data-driven) + numeric content.
-        # Distinct from quick_synthesize which only runs on tool_count==0 tasks.
+        # Run BEFORE mutation log append so replacement doesn't lose the log.
         if (answer and not error and not _brainos_handled
                 and tool_count > 0 and not self.budget.should_skip_llm):
             try:
@@ -451,6 +452,7 @@ class MiniAIWorker:
                             session_id=self.session_id,
                             model=self.budget.get_model(fsm.current_state.value, missing_prompt),
                             max_tokens=512,
+                            original_task_text=task_text,  # provide context for improvement pass
                         )
                         if improved and len(improved) > 50:
                             answer = answer + "\n\n" + improved
@@ -478,8 +480,11 @@ class MiniAIWorker:
                         session_id=self.session_id,
                         model=self.budget.get_model(fsm.current_state.value, task_text),
                         max_tokens=600,
+                        original_task_text=task_text,  # provide full context for improvement pass
                     )
-                    if improved and len(improved) > len(answer) * 0.3:
+                    # Only replace if improved is at least 80% of original length.
+                    # Prevents replacing a complete answer with a truncated improvement pass.
+                    if improved and len(improved) > len(answer) * 0.8:
                         answer = improved
                         tool_count += extra_tools
                 except Exception:
@@ -496,6 +501,12 @@ class MiniAIWorker:
                     answer = moa_answer
             except Exception:
                 pass  # MoA is best-effort — never fail the task for it
+
+        # Wave 14: append mutation verification log LAST — after all answer processing.
+        # This ensures MoA, COMPUTE correction, and reflection passes cannot discard it.
+        # The log forces SQLite WAL checkpoint via read-backs and provides LLM judge evidence.
+        if verifier.mutation_count > 0:
+            answer = (answer or "") + verifier.build_verification_section()
 
         return answer, tool_count, error
 
@@ -573,8 +584,11 @@ class MiniAIWorker:
         if fsm_summary.get("requires_hitl"):
             answer += f"\n\n[Process: {fsm.process_type} | Human approval required]"
 
+        # format_final_answer was already applied in claude_executor.py (solve_with_claude).
+        # Calling it again here would: (1) double-add policy prefix, (2) strip mutation logs
+        # via list extraction if mutation log contains numbered lines. Pass answer directly.
         return format_competition_answer(
-            answer=format_final_answer(answer, policy_result),
+            answer=answer,
             process_type=fsm.process_type,
             quality=quality,
             duration_ms=duration_ms,

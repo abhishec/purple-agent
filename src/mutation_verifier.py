@@ -45,6 +45,10 @@ _WRITE_VERBS = frozenset({
     "post", "send", "publish", "issue", "apply", "commit",
     "transfer", "disburse", "pay", "charge", "refund", "credit",
     "debit", "book", "lock", "unlock", "enable", "disable",
+    # Competition-common side-effect verbs: notifications, scheduling, lifecycle
+    "notify", "schedule", "escalate", "draft", "trigger", "execute",
+    "suspend", "terminate", "migrate", "provision", "deprovision",
+    "remediate", "offboard", "onboard", "rotate", "revoke",
 })
 
 # These verb prefixes reliably identify read operations (skip these for write detection)

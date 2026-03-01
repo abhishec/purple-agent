@@ -82,7 +82,7 @@ def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> f
     Penalizes:
       - Empty data arrays: -0.25 (BrainOS rule)
       - No tool calls: -0.10
-      - Short answers: -0.20 if < 50 chars
+      - Short answers: -0.20 if < 50 chars (EXCEPT bracket format exact_match answers)
       - Error phrases: -0.25
       - Policy violation: -0.15
 
@@ -94,8 +94,16 @@ def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> f
     """
     score = 0.50   # BrainOS conservative baseline
 
-    length = len(answer.strip())
-    if length > 800:    score += 0.20
+    answer_stripped = answer.strip()
+    length = len(answer_stripped)
+
+    # Bracket-format exact_match answers are valid regardless of length —
+    # do not penalize '["INV-001"]' as "too short".
+    is_bracket_format = answer_stripped.startswith('[')
+
+    if is_bracket_format:
+        score += 0.15  # correct format signal
+    elif length > 800:  score += 0.20
     elif length > 400:  score += 0.15
     elif length > 150:  score += 0.08
     elif length < 50:   score -= 0.20
@@ -304,6 +312,12 @@ def build_rl_primer(task_text: str) -> str:
     exactly where it lost points in the last benchmark run.
     """
     cases = _load_cases()
+    # Prune stale/low-quality/repeated-failure entries before scoring
+    try:
+        from src.context_pruner import prune_case_log, prune_rl_primer
+        cases = prune_case_log(cases, task_text)
+    except Exception:
+        pass  # Graceful no-op if context_pruner unavailable
     task_kw = set(_extract_keywords(task_text))
     scored = []
     for c in cases:

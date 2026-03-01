@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 from typing import Callable, Awaitable
 
 import anthropic
@@ -104,16 +105,28 @@ Execute the task fully and in correct order. After all actions, provide a concis
                 block.name,
                 block.input if isinstance(block.input, dict) else {}
             )
+            # Use JSON format instead of Python repr for cleaner Claude parsing
+            try:
+                content_str = json.dumps(result, default=str)
+            except Exception:
+                content_str = str(result)
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
-                "content": str(result),
+                "content": content_str,
                 "_tool_name": block.name,
                 "_result_raw": result,
             })
 
         if hit_tool_limit:
-            # Build synthesis from collected results rather than returning a sentinel
+            # Append any tool results collected before hitting the limit so
+            # _synthesize_from_history can use them (they'd be lost otherwise).
+            if tool_results:
+                clean_partial = [
+                    {k: v for k, v in tr.items() if not k.startswith("_")}
+                    for tr in tool_results
+                ]
+                messages.append({"role": "user", "content": clean_partial})
             break
 
         if tool_results:

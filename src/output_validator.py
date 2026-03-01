@@ -104,6 +104,11 @@ def validate_output(answer: str, process_type: str) -> dict:
     Returns {valid: bool, missing: list[str], present: list[str], score: float}
     Zero API cost — pure string matching.
     """
+    # Bracket-format answers are exact_match targets — field validation doesn't apply.
+    # Running improvement passes on them would corrupt the bracket format.
+    if answer.strip().startswith('['):
+        return {"valid": True, "coverage": 1.0, "present": [], "missing": [], "score": 1.0}
+
     answer_lower = answer.lower()
     required = REQUIRED_OUTPUTS.get(process_type, []) + UNIVERSAL_REQUIRED
 

@@ -60,12 +60,20 @@ def extract_ranked_items(text: str) -> list[str]:
     if len(bulleted) >= 2:
         return [i.strip() for i in bulleted]
 
-    # 4. Comma-separated on one line
+    # 4. Comma-separated on one line — STRICT guards to avoid corrupting financial amounts.
+    # Only trigger when items are all short word-like strings with no digits/currency.
+    _NUMERIC_PATTERN = re.compile(r'[\d$€£¥]')
     lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
     for line in lines[:3]:  # check first 3 lines
-        if ',' in line and len(line) < 300:
+        if ',' in line and len(line) < 200:
             items = [i.strip() for i in line.split(',') if i.strip()]
             if len(items) >= 2:
+                # Reject if any item contains a number or currency symbol (financial data)
+                if any(_NUMERIC_PATTERN.search(item) for item in items):
+                    continue
+                # Reject if any item is too long (full sentences, not list items)
+                if any(len(item) > 50 for item in items):
+                    continue
                 return items
 
     return []
@@ -86,21 +94,29 @@ def enforce_bracket_format(items: list[str]) -> str:
 def format_final_answer(answer: str, policy_result: dict | None = None) -> str:
     """
     Post-process the final answer:
-    1. Prepend policy outcome if failed
+    1. Prepend policy outcome if failed (prose answers only — never corrupt bracket format)
     2. Try to detect and enforce bracket format for list answers
     """
+    answer_stripped = answer.strip()
+
+    # Bracket-format answers are exact_match targets.
+    # NEVER add a policy prefix — it would break string comparison.
+    # Also skip re-extraction to preserve the original ordering.
+    if answer_stripped.startswith('['):
+        return answer_stripped
+
     parts = []
 
     if policy_result and not policy_result.get("passed"):
         parts.append(f"[POLICY: {policy_result.get('summary', 'Policy check failed')}]")
 
     # Try to extract and reformat as bracket list
-    items = extract_ranked_items(answer)
+    items = extract_ranked_items(answer_stripped)
     if items:
         bracket = enforce_bracket_format(items)
         parts.append(bracket)
     else:
-        parts.append(answer.strip())
+        parts.append(answer_stripped)
 
     return "\n".join(parts)
 

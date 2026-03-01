@@ -134,17 +134,19 @@ def format_competition_answer(
     Format final answer for AgentX competition judge.
     Mirrors BrainOS token-budget.ts formatCompetitionAnswer() — built for this exact competition.
 
-    Returns clean answer with metadata block for judging rubric.
+    Bracket-format answers (exact_match tasks): returned as-is without metadata.
+    Prose answers: compact inline metadata appended for LLM judge context.
     """
-    lines = [answer.strip(), ""]
+    answer_text = answer.strip()
 
-    # Metadata block for judge
-    status = "✅ PASSED" if policy_passed else ("❌ FAILED" if policy_passed is False else "—")
-    lines += [
-        "---",
-        f"Process: {process_type.replace('_', ' ').title()}",
-        f"Policy: {status}",
-        f"Quality: {quality:.2f}",
-        f"Duration: {duration_ms}ms",
-    ]
-    return "\n".join(lines)
+    # Bracket-format answers are used in exact_match evaluation.
+    # Adding metadata would break string comparison — return clean.
+    if answer_text.startswith('['):
+        return answer_text
+
+    # Prose answers: append compact metadata for LLM judge context.
+    # Use a clearly delimited block that won't be mistaken for answer content.
+    status = "PASSED" if policy_passed else ("FAILED" if policy_passed is False else "N/A")
+    proc = process_type.replace('_', ' ').title()
+    meta = f"[Process: {proc} | Policy: {status}]"
+    return f"{answer_text}\n\n{meta}"

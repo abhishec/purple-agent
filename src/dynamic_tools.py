@@ -61,6 +61,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
+from src.config import ANTHROPIC_API_KEY as _ANTHROPIC_API_KEY
+
 
 # ── Registry store ─────────────────────────────────────────────────────────
 
@@ -927,7 +929,7 @@ async def detect_tool_gaps_llm(task_text: str, existing_tools: list[dict]) -> li
         )
 
         from anthropic import AsyncAnthropic
-        client = AsyncAnthropic()
+        client = AsyncAnthropic(api_key=_ANTHROPIC_API_KEY)
         msg = await asyncio.wait_for(
             client.messages.create(
                 model="claude-haiku-4-5-20251001",
@@ -1013,7 +1015,7 @@ async def _synthesize_via_haiku(gap: dict) -> dict | None:
     )
     try:
         from anthropic import AsyncAnthropic
-        client = AsyncAnthropic()
+        client = AsyncAnthropic(api_key=_ANTHROPIC_API_KEY)
         msg = await asyncio.wait_for(
             client.messages.create(
                 model="claude-haiku-4-5-20251001",

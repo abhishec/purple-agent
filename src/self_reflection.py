@@ -44,6 +44,11 @@ async def reflect_on_answer(
     if not REFLECTION_ENABLED or not ANTHROPIC_API_KEY:
         return {"score": 0.8, "complete": True, "missing": [], "improve_prompt": ""}
 
+    # Bracket-format = exact_match target — valid by definition, never improve.
+    # Haiku would score '["INV-001"]' as "incomplete" triggering a corruption pass.
+    if answer.strip().startswith('['):
+        return {"score": 1.0, "complete": True, "missing": [], "improve_prompt": ""}
+
     # Fast heuristic pre-check — skip Haiku if clearly good
     heuristic = _heuristic_score(answer, task_text, tool_count)
     if heuristic >= 0.85:
@@ -68,11 +73,17 @@ def _heuristic_score(answer: str, task_text: str, tool_count: int) -> float:
     score = 0.5   # conservative baseline (BrainOS uses 0.5 too)
 
     # Length signals
-    length = len(answer.strip())
-    if length > 800:    score += 0.20
-    elif length > 400:  score += 0.15
-    elif length > 150:  score += 0.08
-    elif length < 50:   score -= 0.20   # suspiciously short
+    answer_stripped = answer.strip()
+    length = len(answer_stripped)
+    is_bracket_format = answer_stripped.startswith('[')
+
+    if is_bracket_format:
+        # Bracket-format = exact_match target — correct format, not too short
+        score += 0.15
+    elif length > 800:   score += 0.20
+    elif length > 400:   score += 0.15
+    elif length > 150:   score += 0.08
+    elif length < 50:    score -= 0.20   # suspiciously short
 
     # Tool usage signals
     if tool_count >= 5:   score += 0.15
