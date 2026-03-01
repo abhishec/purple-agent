@@ -394,9 +394,9 @@ async def numeric_moa_synthesize(
     # Divergent — quick Haiku synthesis
     synth_user = (
         f"ORIGINAL TASK:\n{task_text[:800]}\n\n"
-        f"INITIAL ANSWER:\n{initial_answer[:600]}\n\n"
-        f"VERIFICATION VIEW:\n{verified[:500]}\n\n"
-        f"CHALLENGE VIEW:\n{challenged[:500]}\n\n"
+        f"INITIAL ANSWER:\n{initial_answer[:1000]}\n\n"
+        f"VERIFICATION VIEW:\n{verified[:600]}\n\n"
+        f"CHALLENGE VIEW:\n{challenged[:600]}\n\n"
         "Produce a single correct, concise final answer:"
     )
     synth_system = (

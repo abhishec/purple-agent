@@ -183,7 +183,7 @@ async def _phase_gather(
             gathered.append(entry)
             tool_count += 1
             # Update context chain — next subtask sees this result
-            result_summary = json.dumps(result, default=str)[:300]
+            result_summary = json.dumps(result, default=str)[:500]
             prior_results_ctx += f"- {tool_call['tool']}: {result_summary}\n"
         except asyncio.TimeoutError:
             gathered.append({"subtask": subtask, "error": "timeout"})

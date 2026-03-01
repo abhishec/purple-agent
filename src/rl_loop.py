@@ -328,7 +328,7 @@ def record_outcome(
 
     entry = CaseEntry(
         case_id=case_id,
-        task_summary=task_text[:120],
+        task_summary=task_text[:200],
         keywords=_extract_keywords(task_text),
         outcome=outcome,
         quality=round(quality, 3),
@@ -387,7 +387,7 @@ def build_rl_primer(task_text: str) -> str:
         lines.append("## LEARNED PATTERNS (from similar past tasks — apply these)")
         for c in relevant:
             icon = "✅" if c["outcome"] == "success" else ("❌" if c["outcome"] == "failure" else "⚠️")
-            lines.append(f'\n{icon} Past: "{c["task_summary"][:80]}" — quality {c["quality"]:.2f}')
+            lines.append(f'\n{icon} Past: "{c["task_summary"][:120]}" — quality {c["quality"]:.2f}')
             if c.get("what_worked"):
                 lines.append(f'   ✓ Worked: {c["what_worked"]}')
             if c.get("what_failed"):
