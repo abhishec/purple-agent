@@ -81,7 +81,15 @@ class TokenBudget:
 
         tier = STATE_MODEL.get(fsm_state, "haiku")
         if tier == "sonnet":
-            # Downgrade to Haiku for simple tasks that don't need Sonnet reasoning
+            # MUTATE: irreversible data writes — NEVER downgrade to Haiku regardless
+            # of task simplicity. Even "change shirt, exchange jeans" needs full
+            # Sonnet reasoning to correctly identify the item, call the right write
+            # tool, and produce a verified mutation log. A wrong Haiku write is
+            # worse than a slow Sonnet write.
+            if fsm_state == "MUTATE":
+                return MODELS["sonnet"]
+            # COMPUTE and other sonnet-tier states: downgrade to Haiku when the task
+            # is clearly simple (no complex analytical keywords required).
             if not any(kw in task_text.lower() for kw in COMPLEX_KEYWORDS):
                 return MODELS["haiku"]
             return MODELS["sonnet"]

@@ -243,6 +243,13 @@ class MiniAIWorker:
         context_parts = [
             f"## MiniAIWorker | Task: {task_id} | Session: {self.session_id}",
             f"Tools endpoint: {self._ep}",
+            # Wave 23: explicit autonomy directive — prevents Haiku from stalling
+            # the task with clarifying questions on simple mutations like
+            # "change shirt, exchange jeans" where no keywords trigger Sonnet.
+            "DIRECTIVE: Never ask the user clarifying questions. "
+            "Make the most reasonable interpretation of the task and proceed autonomously. "
+            "If details are ambiguous, choose the safest/most likely interpretation and act. "
+            "Complete the task with the information given.",
         ]
         if rl_primer:
             context_parts.append(self.budget.cap_prompt(rl_primer, "rl"))
