@@ -197,7 +197,7 @@ async def handle_task(
     duration_ms = int(time.time() * 1000) - start_ms
     fsm_summary = fsm.get_summary()
 
-    if fsm_summary.get("requires_hitl"):
+    if fsm_summary.get("requires_hitl") and not answer.strip().startswith('['):
         answer += f"\n\n[Process: {fsm.process_type} | Human approval required]"
 
     return format_competition_answer(
