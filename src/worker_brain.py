@@ -58,6 +58,10 @@ from src.dynamic_tools import (                                                 
     detect_tool_gaps, synthesize_and_register,
 )
 from src.mutation_verifier import MutationVerifier                                            # Wave 14: write-track + WAL flush + LLM judge log
+from src.strategy_bandit import select_strategy, record_outcome as bandit_record               # Wave 15: UCB1 strategy bandit
+from src.compute_verifier import verify_compute_output                                         # Wave 15: COMPUTE math reflection gate
+from src.context_pruner import prune_case_log, prune_rl_primer                                 # Wave 15: context rot pruning
+from src.self_moa import numeric_moa_synthesize                                                # Wave 15: dual top_p MoA for numeric tasks
 
 
 def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
@@ -130,8 +134,10 @@ class MiniAIWorker:
             return {"refused": True, "message": privacy["message"]}
 
         # RL primer (learned patterns from past tasks)
+        # Wave 15: context rot pruning — filter stale/low-quality entries before injection
         rl_primer = build_rl_primer(task_text)
         if rl_primer:
+            rl_primer = prune_rl_primer(rl_primer)   # text-level stale marker removal
             self.budget.consume(rl_primer, "rl_primer")
 
         # Multi-turn session context
@@ -327,8 +333,10 @@ class MiniAIWorker:
         except BrainOSUnavailableError:
             if not self.budget.should_skip_llm:
                 try:
-                    # Wave 10: Five-Phase Executor for complex multi-step tasks
-                    if await should_use_five_phase(task_text, 0):
+                    # Wave 15: UCB1 bandit selects strategy based on past outcomes per process type
+                    strategy = select_strategy(fsm.process_type, task_text)
+
+                    if strategy == "five_phase" or (strategy == "fsm" and await should_use_five_phase(task_text, 0)):
                         answer, tool_count, _fq = await five_phase_execute(
                             task_text=task_text,
                             system_context=system_context,
@@ -336,6 +344,7 @@ class MiniAIWorker:
                             on_tool_call=on_tool_call,
                             tools=self._tools,
                         )
+                        strategy = "five_phase"
                     else:
                         answer, tool_count = await solve_with_claude(
                             task_text=task_text,
@@ -347,9 +356,12 @@ class MiniAIWorker:
                             model=model,
                             max_tokens=max_tokens,
                         )
+                        strategy = "fsm"
+                    context["_strategy_used"] = strategy
                 except Exception as e:
                     error = str(e)
                     answer = f"Task failed: {error}"
+                    context["_strategy_used"] = "fsm"
             else:
                 answer = "Token budget exhausted. Task incomplete."
 
@@ -357,6 +369,49 @@ class MiniAIWorker:
         # and gives LLM judge explicit evidence of correct mutation behavior
         if verifier.mutation_count > 0:
             answer = (answer or "") + verifier.build_verification_section()
+
+        # Wave 15: COMPUTE math reflection gate — catch arithmetic errors before MUTATE
+        # Runs a fast Haiku critique of any numeric values in the answer.
+        if answer and not error and not self.budget.should_skip_llm:
+            try:
+                verify_result = await verify_compute_output(
+                    task_text=task_text,
+                    answer=answer,
+                    process_type=fsm.process_type,
+                )
+                if verify_result.has_errors and verify_result.correction_prompt:
+                    corrected, extra = await solve_with_claude(
+                        task_text=verify_result.correction_prompt,
+                        policy_section=policy_section,
+                        policy_result=policy_result,
+                        tools=self._tools,
+                        on_tool_call=on_tool_call,
+                        session_id=self.session_id,
+                        model=model,
+                        max_tokens=max_tokens,
+                        original_task_text=task_text,
+                    )
+                    if corrected and len(corrected) > 80:
+                        answer = corrected
+                        tool_count += extra
+            except Exception:
+                pass  # never block execution for verification failures
+
+        # Wave 15: Numeric MoA — dual top_p synthesis for financial answer validation
+        # Runs when the answer has tool results (data-driven) + numeric content.
+        # Distinct from quick_synthesize which only runs on tool_count==0 tasks.
+        if (answer and not error and not _brainos_handled
+                and tool_count > 0 and not self.budget.should_skip_llm):
+            try:
+                moa_numeric = await numeric_moa_synthesize(
+                    task_text=task_text,
+                    initial_answer=answer,
+                    system_context=system_context,
+                )
+                if moa_numeric and len(moa_numeric) > len(answer) * 0.4:
+                    answer = moa_numeric
+            except Exception:
+                pass
 
         # Gap 3: if we're at APPROVAL_GATE and answer looks thin, build a proper brief
         if context.get("gate_fires") and answer and len(answer) < 200:
@@ -479,6 +534,10 @@ class MiniAIWorker:
             error=error,
             domain=fsm.process_type,
         )
+
+        # Wave 15: UCB1 bandit outcome — feed quality back to strategy bandit
+        strategy_used = context.get("_strategy_used", "fsm")
+        bandit_record(fsm.process_type, strategy_used, quality)
 
         # Wave 12: context RL — check if pre-computed finance facts matched the answer
         finance_ctx_for_check = context.get("finance_ctx", "")

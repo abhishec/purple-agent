@@ -53,8 +53,10 @@ from __future__ import annotations
 import json
 import math
 import os
+import random
 import re
 import asyncio
+import statistics as _statistics_module
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
@@ -106,6 +108,9 @@ _SANDBOX_GLOBALS: dict[str, Any] = {
     "math": math,
     "Decimal": Decimal,
     "ROUND_HALF_UP": ROUND_HALF_UP,
+    # Wave 15: Monte Carlo + statistical simulation support
+    "random": random,
+    "statistics": _statistics_module,
     # Safe builtins restored individually
     "abs": abs, "int": int, "float": float, "str": str, "bool": bool,
     "round": round, "min": min, "max": max, "sum": sum, "len": len,
@@ -234,6 +239,92 @@ _GAP_PATTERNS: list[dict] = [
         ],
         "description": "Loan amortization schedule — seeded at startup, not re-synthesized.",
     },
+    # ── Wave 15: Monte Carlo + numerical methods ────────────────────────────
+    {
+        "key": "finance_monte_carlo",
+        "patterns": [
+            r"\bmonte.?carlo\b", r"\bsimulat\w+ (paths?|scenario|run|trial)",
+            r"\bstochastic\b", r"\brandom (walk|path|simulation)\b",
+            r"\bvar\b.*\bsimulat\b", r"\bvalue.?at.?risk.*simulat\b",
+            r"\b\d[\d,]+\s*(path|trial|iteration|run|sample)s?\b",
+        ],
+        "description": (
+            "Monte Carlo simulation for financial risk and pricing. "
+            "Function name: finance_monte_carlo. "
+            "Params: s0 (float, initial asset price or value), "
+            "mu (float, annual drift/return as decimal, e.g. 0.08), "
+            "sigma (float, annual volatility as decimal, e.g. 0.20), "
+            "T (float, time horizon in years), "
+            "n_paths (int, number of simulation paths, default 10000), "
+            "n_steps (int, time steps per path, default 252). "
+            "Returns: dict with 'mean', 'std', 'var_95', 'var_99', 'paths_summary', "
+            "'result' (mean final value). Use random.seed(42) for reproducibility. "
+            "Use random.gauss(0,1) for normal samples. "
+            "Formula: S(t+dt) = S(t) * exp((mu - 0.5*sigma^2)*dt + sigma*sqrt(dt)*Z)"
+        ),
+    },
+    {
+        "key": "finance_black_scholes",
+        "patterns": [
+            r"\bblack.?scholes\b", r"\boption.?pric\w+\b",
+            r"\bcall.?option\b", r"\bput.?option\b",
+            r"\bgreeks\b", r"\bdelta\b.*\bgamma\b",
+            r"\bimplied.?volatility\b", r"\bvega\b", r"\btheta\b",
+        ],
+        "description": (
+            "Black-Scholes option pricing model with Greeks. "
+            "Function name: finance_black_scholes. "
+            "Params: S (float, current stock price), K (float, strike price), "
+            "T (float, time to expiry in years), r (float, risk-free rate as decimal), "
+            "sigma (float, volatility as decimal), option_type (str: 'call' or 'put'). "
+            "Compute d1 = (ln(S/K) + (r + 0.5*sigma^2)*T) / (sigma*sqrt(T)), "
+            "d2 = d1 - sigma*sqrt(T). "
+            "Use math.erf for N(x) approximation: N(x) = 0.5*(1 + math.erf(x/math.sqrt(2))). "
+            "Return dict with 'result' (option price), 'details' containing "
+            "d1, d2, delta, gamma, theta, vega, rho."
+        ),
+    },
+    {
+        "key": "finance_var",
+        "patterns": [
+            r"\bvalue.?at.?risk\b", r"\bvar\b.*\b(confidence|percentile|portfolio)\b",
+            r"\bportfolio.?risk\b", r"\bcvar\b", r"\bexpected.?shortfall\b",
+            r"\brisk.?measure\b", r"\b(95|99)%\s*var\b",
+        ],
+        "description": (
+            "Portfolio Value at Risk (VaR) and Conditional VaR (CVaR). "
+            "Function name: finance_var. "
+            "Params: returns (list of float, historical or simulated returns), "
+            "confidence_level (float, e.g. 0.95 for 95%), "
+            "portfolio_value (float, current portfolio value, default 1.0). "
+            "Sort returns ascending, find percentile cutoff. "
+            "VaR = -returns[floor(n*(1-confidence_level))] * portfolio_value. "
+            "CVaR = -mean(returns below VaR cutoff) * portfolio_value. "
+            "Return dict with 'result' (VaR), 'details' with cvar, "
+            "confidence_level, n_observations, worst_return."
+        ),
+    },
+    {
+        "key": "finance_newton_raphson",
+        "patterns": [
+            r"\bnewton.?raphson\b", r"\bbisection method\b",
+            r"\broot.?find\w+\b", r"\bnumerical.*irr\b",
+            r"\bsolve for.*rate\b", r"\bfind.*yield\b",
+        ],
+        "description": (
+            "Newton-Raphson root finder for implicit rate/yield equations. "
+            "Function name: finance_newton_raphson. "
+            "Params: cash_flows (list of float, period cash flows including t=0), "
+            "target_npv (float, target NPV to solve for, default 0.0), "
+            "initial_guess (float, starting rate as decimal, default 0.1), "
+            "max_iter (int, default 100), tolerance (float, default 1e-6). "
+            "Use IRR formula: NPV(r) = sum(cf[t]/(1+r)^t). "
+            "Derivative: dNPV/dr = sum(-t*cf[t]/(1+r)^(t+1)). "
+            "Iterate: r_new = r - NPV(r)/dNPV(r). "
+            "Return dict with 'result' (rate as percentage), "
+            "'details' with iterations, converged (bool), npv_at_result."
+        ),
+    },
 ]
 
 # Amortization tool code — seeded into registry at startup.
@@ -350,6 +441,8 @@ The function runs in a sandbox with ONLY these available:
 - math module (math.log, math.exp, math.sqrt, math.pow, math.floor, math.ceil, math.pi, math.e)
 - Decimal (from decimal module) for precision arithmetic
 - ROUND_HALF_UP (rounding mode constant)
+- random module: random.gauss(mu, sigma), random.seed(n), random.uniform(a, b), random.random()
+- statistics module: statistics.mean(), statistics.stdev(), statistics.median()
 - Safe builtins: abs, int, float, str, bool, round, min, max, sum, len, range,
   enumerate, zip, list, dict, tuple, set, isinstance, pow, divmod, sorted, any, all
 - ValueError, ZeroDivisionError for error handling

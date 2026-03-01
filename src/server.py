@@ -11,9 +11,10 @@ from src.training_loader import seed_from_training_data, is_stale
 from src.context_rl import get_context_stats
 from src.dynamic_fsm import get_synthesis_stats
 from src.dynamic_tools import seed_amortization_tool, get_tool_registry_stats
+from src.strategy_bandit import get_stats as get_bandit_stats
 from src.report_analyzer import analyze_and_save, load_intelligence
 
-app = FastAPI(title="BrainOS Purple Agent", version="2.0.0")
+app = FastAPI(title="BrainOS Purple Agent", version="5.0.0")
 
 AGENT_CARD = {
     "name": "BrainOS Purple Agent",
@@ -22,7 +23,7 @@ AGENT_CARD = {
         "8-state FSM, deterministic policy enforcement, Haiku memory compression, "
         "financial arithmetic, schema drift resilience, and RL quality loop."
     ),
-    "version": "2.0.0",
+    "version": "5.0.0",
     "url": os.getenv("PURPLE_AGENT_CARD_URL", "https://purple.agentbench.usebrainos.com"),
     "capabilities": {"streaming": False, "tools": True},
     "skills": [{
@@ -66,7 +67,7 @@ async def agent_card():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "agent": "brainos-mini-ai-worker", "version": "2.0.0"}
+    return {"status": "ok", "agent": "brainos-mini-ai-worker", "version": "5.0.0"}
 
 
 @app.post("/")
@@ -226,6 +227,7 @@ async def rl_status():
         "context_rl": ctx_stats,                # per-process confidence + drift alerts
         "dynamic_fsm": get_synthesis_stats(),   # Wave 13: novel FSM type synthesis cache
         "dynamic_tools": get_tool_registry_stats(),  # Wave 14: runtime tool factory stats
+        "strategy_bandit": get_bandit_stats(),   # Wave 15: UCB1 strategy learning
     }
 
 

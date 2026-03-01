@@ -302,3 +302,107 @@ async def quick_synthesize(task_text: str, system_prompt: str) -> str:
         except Exception:
             answer = ""
     return answer
+
+
+# ── Wave 15: Numeric MoA — dual top_p for tool-result tasks ──────────────────
+#
+# Problem: existing quick_synthesize only runs when tool_count == 0.
+# Numeric tasks (amortization, NPV, invoice reconciliation) use tools
+# but still benefit from dual-interpretation synthesis to catch math errors.
+#
+# Pattern:
+#   1. Run "restate-and-verify" Haiku call (conservative top_p): given the task +
+#      collected answer, verify the numbers and restate the conclusion cleanly.
+#   2. Run "challenge" Haiku call (exploratory top_p): look for any errors or
+#      alternative interpretations of the numeric result.
+#   3. Synthesize: if both agree → return longer; if diverge → merge.
+
+_NUMERIC_VERIFY_PROMPT = """\
+You are a financial verification specialist. You are given a task and an agent's answer.
+Your job: verify the numeric calculations are correct and restate the final answer cleanly.
+If numbers look correct: restate the answer more clearly with proper formatting.
+If you spot an error: provide the corrected calculation and answer.
+Be concise. Show key numbers. Do not repeat the entire answer verbatim."""
+
+_NUMERIC_CHALLENGE_PROMPT = """\
+You are a skeptical financial auditor. You are given a task and an agent's answer.
+Your job: challenge the answer — look for arithmetic errors, wrong formulas, missed steps.
+If the answer is correct: confirm it and add any useful context or caveats.
+If you find an error: provide the correct calculation.
+Be specific. Focus on the numbers, not the prose."""
+
+
+async def numeric_moa_synthesize(
+    task_text: str,
+    initial_answer: str,
+    system_context: str = "",
+) -> str:
+    """
+    Wave 15: Dual-path verification MoA for numeric/financial task answers.
+    Runs two Haiku interpretations of the answer in parallel, synthesizes the best.
+
+    Args:
+        task_text:      Original task
+        initial_answer: Answer from main execution (may have math errors)
+        system_context: Optional system context for grounding
+
+    Returns: synthesized/verified answer string, or initial_answer on failure
+    """
+    # Only run for answers with numeric content
+    import re
+    if not re.search(r'\d[\d,.]*', initial_answer):
+        return initial_answer
+
+    user_content = (
+        f"TASK:\n{task_text[:600]}\n\n"
+        f"AGENT ANSWER:\n{initial_answer[:1200]}"
+    )
+
+    verify_coro   = _call_haiku(_NUMERIC_VERIFY_PROMPT,    user_content, top_p=0.80, max_tokens=800, timeout=10.0)
+    challenge_coro = _call_haiku(_NUMERIC_CHALLENGE_PROMPT, user_content, top_p=0.95, max_tokens=800, timeout=10.0)
+
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(verify_coro, challenge_coro, return_exceptions=True),
+            timeout=14.0,
+        )
+    except asyncio.TimeoutError:
+        return initial_answer
+
+    verified: str  = results[0] if isinstance(results[0], str) and results[0] else ""
+    challenged: str = results[1] if isinstance(results[1], str) and results[1] else ""
+
+    if not verified and not challenged:
+        return initial_answer
+    if not verified:
+        return challenged if len(challenged) > len(initial_answer) * 0.5 else initial_answer
+    if not challenged:
+        return verified if len(verified) > len(initial_answer) * 0.5 else initial_answer
+
+    overlap = compute_overlap(verified, challenged)
+
+    if overlap >= _OVERLAP_HIGH:
+        # High agreement — return the more complete one
+        best = _best_of_two(verified, challenged)
+        return best if len(best) > len(initial_answer) * 0.4 else initial_answer
+
+    # Divergent — quick Haiku synthesis
+    synth_user = (
+        f"ORIGINAL TASK:\n{task_text[:400]}\n\n"
+        f"INITIAL ANSWER:\n{initial_answer[:600]}\n\n"
+        f"VERIFICATION VIEW:\n{verified[:500]}\n\n"
+        f"CHALLENGE VIEW:\n{challenged[:500]}\n\n"
+        "Produce a single correct, concise final answer:"
+    )
+    synth_system = (
+        "Synthesize these perspectives into the single most accurate answer. "
+        "Prioritize mathematical correctness. Be concise."
+    )
+    try:
+        synthesized = await asyncio.wait_for(
+            _call_haiku(synth_system, synth_user, top_p=0.85, max_tokens=900, timeout=10.0),
+            timeout=12.0,
+        )
+        return synthesized if synthesized and len(synthesized) > 50 else initial_answer
+    except Exception:
+        return _best_of_two(verified, challenged) or initial_answer

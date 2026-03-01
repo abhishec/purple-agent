@@ -34,6 +34,10 @@ env:
   PURPLE_URL: https://purple.agentbench.usebrainos.com
   GREEN_URL: https://benchmark.usebrainos.com
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   # ─────────────────────────────────────────────
   # JOB 1: Build + push Docker image
@@ -49,11 +53,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::848269696611:role/agentbench-github-deploy
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to private ECR
@@ -102,11 +105,10 @@ jobs:
     if: always() && (needs.build.result == 'success' || needs.build.result == 'skipped')
 
     steps:
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::848269696611:role/agentbench-github-deploy
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Force deploy ECS service
@@ -165,8 +167,12 @@ jobs:
       - name: Run benchmark — task_06 + task_24
         run: |
           echo "🧪 Smoke test via green judge..."
+          BENCH_KEY=$(aws ssm get-parameter \
+            --name /agentbench/benchmark-api-key \
+            --with-decryption --query Parameter.Value --output text)
           RESULT=$(curl -sf -X POST ${{ env.GREEN_URL }}/benchmark/batch \
             -H "Content-Type: application/json" \
+            -H "X-Api-Key: $BENCH_KEY" \
             -d '{
               "task_ids": ["task_06", "task_24", "task_09"],
               "purple_url": "${{ env.PURPLE_URL }}",
