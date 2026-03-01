@@ -80,6 +80,10 @@ Execute the task fully and in correct order. After all actions, provide a concis
         if response.stop_reason == "end_turn":
             for block in assistant_content:
                 if hasattr(block, "text") and block.text.strip():
+                    raw_answer = block.text.strip()
+                    # Bracket-format exact_match answers must pass through unmodified
+                    if raw_answer.startswith('['):
+                        return raw_answer, tool_count
                     return format_final_answer(block.text, policy_result), tool_count
             return "", tool_count
 
@@ -160,12 +164,23 @@ def _synthesize_from_history(
         if isinstance(content, list):
             for block in reversed(content):
                 if hasattr(block, "text") and block.text.strip():
+                    raw = block.text.strip()
+                    # Bracket-format exact_match answers must pass through unmodified
+                    if raw.startswith('['):
+                        return raw
                     return format_final_answer(block.text, policy_result)
                 if isinstance(block, dict) and block.get("type") == "text":
                     text = block.get("text", "").strip()
                     if text:
+                        # Bracket-format exact_match answers must pass through unmodified
+                        if text.startswith('['):
+                            return text
                         return format_final_answer(text, policy_result)
         elif isinstance(content, str) and content.strip():
+            raw = content.strip()
+            # Bracket-format exact_match answers must pass through unmodified
+            if raw.startswith('['):
+                return raw
             return format_final_answer(content, policy_result)
 
     # Collect tool results for a digest summary
@@ -183,6 +198,10 @@ def _synthesize_from_history(
 
     if last_meaningful_content:
         base = last_meaningful_content
+        # Bracket-format exact_match answers must pass through unmodified —
+        # do not wrap with "Based on N tool calls: ..." prefix
+        if base.strip().startswith('['):
+            return base.strip()
     elif tool_results_text:
         digest = " | ".join(tool_results_text[-5:])
         base = f"Collected data from {tool_count} tool calls: {digest}"
