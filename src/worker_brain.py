@@ -445,7 +445,17 @@ class MiniAIWorker:
                     initial_answer=answer,
                     system_context=system_context,
                 )
-                if moa_numeric and len(moa_numeric) > len(answer) * 0.4:
+                # Guard: only replace if MoA result is substantively longer,
+                # doesn't end with a clarifying question, and isn't much shorter.
+                # Threshold raised from 0.4 → 0.8 to prevent Haiku clarifying
+                # questions (often ~50 chars) from overwriting a good answer.
+                _moa_numeric_ok = (
+                    moa_numeric
+                    and len(moa_numeric) > len(answer) * 0.8
+                    and '?' not in moa_numeric[-100:]
+                    and not moa_numeric.strip().startswith('[')
+                )
+                if _moa_numeric_ok:
                     answer = moa_numeric
             except Exception:
                 pass
@@ -509,9 +519,17 @@ class MiniAIWorker:
                         max_tokens=600,
                         original_task_text=task_text,  # provide full context for improvement pass
                     )
-                    # Only replace if improved is at least 80% of original length.
-                    # Prevents replacing a complete answer with a truncated improvement pass.
-                    if improved and len(improved) > len(answer) * 0.8:
+                    # Only replace if improved is substantively as long as the original,
+                    # does NOT end with a clarifying question (Haiku asking for more info),
+                    # and does NOT overwrite a bracket-format exact_match answer.
+                    _reflect_ok = (
+                        improved
+                        and len(improved) > len(answer) * 0.8
+                        and '?' not in improved[-100:]
+                        and not answer.strip().startswith('[')
+                        and not improved.strip().startswith('[')
+                    )
+                    if _reflect_ok:
                         answer = improved
                         tool_count += extra_tools
                 except Exception:
@@ -525,7 +543,14 @@ class MiniAIWorker:
                 and not answer.strip().startswith('[')):
             try:
                 moa_answer = await moa_quick(task_text, system_context)
-                if moa_answer and len(moa_answer) > len(answer) * 0.6:
+                # Guard: don't replace with a Haiku clarifying question.
+                _moa_quick_ok = (
+                    moa_answer
+                    and len(moa_answer) > len(answer) * 0.6
+                    and '?' not in moa_answer[-100:]
+                    and not moa_answer.strip().startswith('[')
+                )
+                if _moa_quick_ok:
                     answer = moa_answer
             except Exception:
                 pass  # MoA is best-effort — never fail the task for it
