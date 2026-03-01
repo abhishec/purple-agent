@@ -21,6 +21,7 @@ Gap modules wired:
 from __future__ import annotations
 import time
 import json
+import asyncio
 
 from src.brainos_client import run_task, BrainOSUnavailableError
 from src.fallback_solver import solve_with_claude
@@ -47,6 +48,8 @@ from src.entity_extractor import get_entity_context, record_task_entities       
 from src.recovery_agent import wrap_with_recovery                               # Wave 8
 from src.self_reflection import reflect_on_answer, build_improvement_prompt, should_improve  # Wave 9
 from src.output_validator import validate_output, get_missing_fields_prompt              # Wave 9
+from src.self_moa import quick_synthesize as moa_quick                                   # Wave 10
+from src.five_phase_executor import five_phase_execute, should_use_five_phase            # Wave 10
 
 
 def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
@@ -265,16 +268,26 @@ class MiniAIWorker:
         except BrainOSUnavailableError:
             if not self.budget.should_skip_llm:
                 try:
-                    answer, tool_count = await solve_with_claude(
-                        task_text=task_text,
-                        policy_section=policy_section,
-                        policy_result=policy_result,
-                        tools=self._tools,
-                        on_tool_call=on_tool_call,
-                        session_id=self.session_id,
-                        model=model,
-                        max_tokens=max_tokens,
-                    )
+                    # Wave 10: Five-Phase Executor for complex multi-step tasks
+                    if await should_use_five_phase(task_text, 0):
+                        answer, tool_count, _fq = await five_phase_execute(
+                            task_text=task_text,
+                            system_context=system_context,
+                            process_type=fsm.process_type,
+                            on_tool_call=on_tool_call,
+                            tools=self._tools,
+                        )
+                    else:
+                        answer, tool_count = await solve_with_claude(
+                            task_text=task_text,
+                            policy_section=policy_section,
+                            policy_result=policy_result,
+                            tools=self._tools,
+                            on_tool_call=on_tool_call,
+                            session_id=self.session_id,
+                            model=model,
+                            max_tokens=max_tokens,
+                        )
                 except Exception as e:
                     error = str(e)
                     answer = f"Task failed: {error}"
@@ -343,6 +356,16 @@ class MiniAIWorker:
                 except Exception:
                     pass
 
+        # Wave 10: MoA synthesis — dual top_p for pure-reasoning tasks (no tools)
+        # For tool-heavy tasks MoA can't add value (lacks gathered data), so skip.
+        if answer and not error and tool_count == 0 and not self.budget.should_skip_llm:
+            try:
+                moa_answer = await moa_quick(task_text, system_context)
+                if moa_answer and len(moa_answer) > len(answer) * 0.6:
+                    answer = moa_answer
+            except Exception:
+                pass  # MoA is best-effort — never fail the task for it
+
         return answer, tool_count, error
 
     # ── REFLECT ───────────────────────────────────────────────────────────
@@ -388,6 +411,7 @@ class MiniAIWorker:
             tool_count=tool_count,
             policy_passed=policy_passed,
             error=error,
+            domain=fsm.process_type,
         )
 
         # Wave 8: extract knowledge + entities in background (fire-and-forget)
@@ -395,7 +419,7 @@ class MiniAIWorker:
             extract_and_store(task_text, answer, fsm.process_type, quality)
         )
         asyncio.ensure_future(
-            asyncio.get_event_loop().run_in_executor(
+            asyncio.get_running_loop().run_in_executor(
                 None, record_task_entities, task_text, answer, fsm.process_type
             )
         )

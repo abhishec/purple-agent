@@ -16,6 +16,11 @@ Structure per process:
   connector_hints     — which tool NAME PREFIXES are relevant (helps Claude prioritize)
   hitl_required       — whether this process always needs human approval
   risk_level          — "low" | "medium" | "high" — affects approval brief detail
+
+IMPORTANT: state_instructions MUST NOT reference specific tool names.
+They describe WHAT data to gather / WHAT action to take. Use phrases like
+"use available read-only tools", "use the tools available for this workspace",
+"look up", "retrieve", "fetch using whichever tools are available".
 """
 from __future__ import annotations
 
@@ -31,12 +36,13 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
             "DECOMPOSE": (
                 "Identify: requester name, expense amount, category, date, "
                 "receipt status, department, cost center, and business justification. "
-                "Flag if any info is missing — ask before proceeding."
+                "Flag if any information is missing — clarify before proceeding."
             ),
             "ASSESS": (
-                "Fetch: requester's remaining expense budget, their approval limit, "
-                "department policy doc, and any prior reimbursements this period. "
-                "Use read-only tools: get_employee_profile, get_budget_balance, list_expenses."
+                "Using the read-only tools available for this workspace, gather: "
+                "the requester's remaining expense budget, their approval limit, "
+                "the department policy document, and any prior reimbursements this period. "
+                "Look up the requester's profile, their budget balance, and their expense history."
             ),
             "COMPUTE": (
                 "Calculate: total claim amount (itemized), tax-deductible portion, "
@@ -44,20 +50,22 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
                 "and year-to-date spend for this requester."
             ),
             "POLICY_CHECK": (
-                "Verify: amount ≤ requester's single-transaction limit, "
-                "category is in approved list, receipt attached if required, "
-                "submission within 30-day window. Flag any violation."
+                "Verify: amount is within the requester's single-transaction limit, "
+                "category is in the approved list, receipt is attached if required, "
+                "and submission is within the 30-day window. Flag any violation."
             ),
             "APPROVAL_GATE": (
                 "Approval required. Present: requester, amount, category, "
                 "policy compliance status, computed totals. "
-                "If >$500: manager approval. If >$5,000: VP approval. "
-                "Do NOT call create/update tools — wait for approval."
+                "If amount exceeds $500: manager approval required. "
+                "If amount exceeds $5,000: VP approval required. "
+                "Do NOT call any create or update tools — wait for approval."
             ),
             "MUTATE": (
-                "Approval received. Execute: create expense record, mark as approved, "
-                "update budget allocation, initiate reimbursement. "
-                "Log each action."
+                "Approval received. Using the write tools available for this workspace, execute: "
+                "record the approved expense, mark it as approved, "
+                "update the budget allocation, and initiate reimbursement. "
+                "Log each action taken."
             ),
             "COMPLETE": (
                 "Summarize: total approved, reimbursement timeline, "
@@ -76,28 +84,31 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
                 "due date, line items. Extract all fields before proceeding."
             ),
             "ASSESS": (
-                "Fetch: matching PO, goods receipt record, vendor payment terms, "
-                "any prior invoices from this vendor. "
-                "Use: get_purchase_order, get_goods_receipt, get_vendor_terms."
+                "Using the read-only tools available for this workspace, retrieve: "
+                "the matching purchase order, the goods receipt record, "
+                "vendor payment terms, and any prior invoices from this vendor. "
+                "Look up the PO by number, the receipt by PO or delivery reference, "
+                "and vendor terms from the vendor or contract record."
             ),
             "COMPUTE": (
-                "Calculate: invoice-PO variance (must be <2% or <$500 per policy), "
+                "Calculate: invoice-to-PO variance (must be less than 2% or less than $500 per policy), "
                 "early payment discount if applicable, "
-                "late payment penalty if past due. "
-                "Use apply_variance_check() — 6-decimal precision for boundary cases."
+                "and late payment penalty if the invoice is past due. "
+                "Use 6-decimal precision for boundary variance cases."
             ),
             "POLICY_CHECK": (
-                "Verify: 3-way match (invoice ↔ PO ↔ receipt), "
-                "amount variance within tolerance, "
-                "vendor is approved, payment terms match contract."
+                "Verify: 3-way match passes (invoice matches PO matches goods receipt), "
+                "amount variance is within tolerance, "
+                "vendor is on the approved list, and payment terms match the contract."
             ),
             "MUTATE": (
-                "3-way match passed. Execute: approve invoice, "
-                "schedule payment per terms, update AP ledger."
+                "3-way match passed. Using the write tools available for this workspace, execute: "
+                "approve the invoice, schedule payment per vendor terms, "
+                "and update the accounts payable ledger."
             ),
             "COMPLETE": (
-                "Summarize: invoice approved/rejected, payment date, "
-                "variance amount if any, AP balance impact."
+                "Summarize: invoice approved or rejected, payment date, "
+                "variance amount if any, and AP balance impact."
             ),
         },
     },
@@ -108,36 +119,38 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["accounting", "erp", "finance", "ledger"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: close period (month/year), entities in scope, "
-                "checklist items: accruals, reconciliations, journal entries, "
-                "intercompany eliminations."
+                "Identify: close period (month and year), entities in scope, "
+                "checklist items including: accruals, reconciliations, journal entries, "
+                "and intercompany eliminations."
             ),
             "ASSESS": (
-                "Fetch: all open items per close checklist — "
-                "unapproved journals, unreconciled accounts, "
-                "pending accruals, intercompany imbalances."
+                "Using the read-only tools available for this workspace, retrieve all open items "
+                "per the close checklist: unapproved journal entries, unreconciled accounts, "
+                "pending accruals, and intercompany imbalances. "
+                "Look up each category of open item separately."
             ),
             "COMPUTE": (
                 "Calculate: P&L by department, balance sheet movements, "
-                "tax provision estimates, revenue recognition adjustments. "
-                "Straight-line depreciation for any new assets this period."
+                "tax provision estimates, and revenue recognition adjustments. "
+                "Apply straight-line depreciation for any new assets added this period."
             ),
             "POLICY_CHECK": (
-                "Verify: all reconciliations signed off, no unexplained variances >$1K, "
-                "management review complete, audit trail present for all adjustments."
+                "Verify: all reconciliations are signed off, no unexplained variances exceed $1,000, "
+                "management review is complete, and an audit trail exists for all adjustments."
             ),
             "APPROVAL_GATE": (
                 "CFO sign-off required before period lock. "
                 "Present: P&L summary, balance sheet, open items count, "
-                "material variances requiring explanation."
+                "and material variances requiring explanation."
             ),
             "MUTATE": (
-                "CFO approved. Execute: lock accounting period, "
-                "post final journal entries, generate trial balance."
+                "CFO approved. Using the write tools available for this workspace, execute: "
+                "lock the accounting period, post final journal entries, "
+                "and generate the trial balance."
             ),
             "COMPLETE": (
                 "Period closed. Output: final trial balance hash, "
-                "close timestamp, approver, open items deferred to next period."
+                "close timestamp, approver name, and open items deferred to next period."
             ),
         },
     },
@@ -148,37 +161,40 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["crm", "email", "finance", "billing"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: customer, overdue amount, aging bucket (30/60/90+), "
-                "invoice numbers, last payment date, and assigned collector."
+                "Identify: customer, overdue amount, aging bucket (30/60/90+ days), "
+                "invoice numbers, last payment date, and the assigned collector."
             ),
             "ASSESS": (
-                "Fetch: full payment history, credit limit, current balance, "
-                "open disputes, contact info for billing contact. "
-                "Use: get_customer_account, get_payment_history, list_open_invoices."
+                "Using the read-only tools available for this workspace, retrieve: "
+                "the customer's full payment history, credit limit, current outstanding balance, "
+                "any open disputes, and the billing contact information. "
+                "Look up the customer account record, payment records, and any open invoices."
             ),
             "COMPUTE": (
-                "Calculate: total overdue by aging bucket, "
-                "interest/late fees per contract terms, "
-                "collectability score (days overdue × invoice count)."
+                "Calculate: total overdue amount broken down by aging bucket, "
+                "applicable interest or late fees per contract terms, "
+                "and a collectability score based on days overdue and invoice count."
             ),
             "POLICY_CHECK": (
-                "Determine collection action by aging: "
-                "30-day: courtesy reminder, 60-day: formal notice, "
-                "90-day+: escalate to collections agency or legal."
+                "Determine the appropriate collection action by aging tier: "
+                "30-day bucket: send a courtesy reminder, "
+                "60-day bucket: send a formal notice, "
+                "90-day and beyond: escalate to a collections agency or legal team."
             ),
             "MUTATE": (
-                "Send appropriate communication per policy tier. "
-                "If payment plan agreed: create installment schedule. "
-                "If write-off: create bad debt record."
+                "Using the write tools available for this workspace, send the appropriate "
+                "communication per the policy tier. "
+                "If a payment plan is agreed upon: create an installment schedule. "
+                "If writing off the debt: create a bad debt record."
             ),
             "SCHEDULE_NOTIFY": (
                 "Schedule: next follow-up reminder, "
                 "payment plan due date alerts, "
-                "escalation trigger if no response in 5 days."
+                "and an escalation trigger if no response is received within 5 days."
             ),
             "COMPLETE": (
                 "Summarize: action taken, amounts outstanding, "
-                "next follow-up date, predicted resolution."
+                "next follow-up date, and predicted resolution."
             ),
         },
     },
@@ -189,43 +205,46 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["hr", "payroll", "finance", "bank"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: pay period, employee list, pay types "
-                "(regular, overtime, commission, bonus), "
-                "any off-cycle adjustments this period."
+                "Identify: pay period, full employee list, pay types "
+                "(regular hours, overtime, commission, bonus), "
+                "and any off-cycle adjustments for this period."
             ),
             "ASSESS": (
-                "Fetch: hours worked per employee, approved overtime, "
-                "tax withholding settings, benefit deductions, "
-                "garnishments, and YTD figures."
+                "Using the read-only tools available for this workspace, retrieve for each employee: "
+                "hours worked, approved overtime, tax withholding settings, "
+                "benefit deductions, garnishments, and year-to-date figures. "
+                "Look up timesheets, HR records, and payroll configuration."
             ),
             "COMPUTE": (
-                "Calculate gross pay (hours × rate + OT at 1.5x), "
-                "all statutory deductions (federal/state tax, FICA), "
-                "voluntary deductions (401k, health), net pay. "
-                "Use amortize_loan() for any pay advances."
+                "Calculate for each employee: gross pay (regular hours times rate, plus overtime at 1.5x), "
+                "all statutory deductions (federal and state tax, FICA), "
+                "voluntary deductions (401k, health insurance), and net pay. "
+                "Apply loan amortization for any pay advances on record."
             ),
             "POLICY_CHECK": (
-                "Verify: total payroll within approved budget, "
-                "no duplicate entries, all garnishments applied, "
-                "OT approved by manager for each employee."
+                "Verify: total payroll is within the approved budget, "
+                "no duplicate entries exist, all garnishments are applied, "
+                "and overtime is manager-approved for each employee."
             ),
             "APPROVAL_GATE": (
-                "Payroll director approval required. "
-                "Present: total gross, total deductions, total net, "
-                "headcount, any anomalies vs prior period."
+                "Payroll director approval required before disbursement. "
+                "Present: total gross pay, total deductions, total net pay, "
+                "headcount, and any anomalies compared to the prior period."
             ),
             "MUTATE": (
-                "Approved. Execute: submit payroll file to bank (ACH/BACS), "
-                "update YTD accumulators, record payroll journal entry."
+                "Approved. Using the write tools available for this workspace, execute: "
+                "submit the payroll file to the bank (ACH or BACS), "
+                "update year-to-date accumulators for each employee, "
+                "and record the payroll journal entry in accounting."
             ),
             "SCHEDULE_NOTIFY": (
-                "Notify employees of pay stubs available. "
-                "Send payroll summary to finance. "
-                "Schedule next pay run."
+                "Notify employees that pay stubs are available. "
+                "Send the payroll summary to the finance team. "
+                "Schedule the next pay run."
             ),
             "COMPLETE": (
-                "Payroll run complete. Output: total disbursed, "
-                "headcount paid, next run date."
+                "Payroll run complete. Output: total amount disbursed, "
+                "headcount paid, and next scheduled run date."
             ),
         },
     },
@@ -238,40 +257,43 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["vendor", "finance", "jira", "slack", "erp"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: item/service requested, quantity, estimated cost, "
-                "department, requester, budget code, and business justification. "
-                "Ask if any field is missing."
+                "Identify: item or service requested, quantity, estimated cost, "
+                "department, requester name, budget code, and business justification. "
+                "Ask if any field is missing before proceeding."
             ),
             "ASSESS": (
-                "Fetch: vendor profile (approved?), budget remaining for department, "
-                "existing contracts with this vendor, prior purchases this quarter. "
-                "Use: get_vendor, get_budget_balance, list_contracts."
+                "Using the read-only tools available for this workspace, retrieve: "
+                "the vendor's profile (are they approved?), the department's remaining budget, "
+                "any existing contracts with this vendor, and prior purchases this quarter. "
+                "Look up the vendor record, the budget balance, and any active contracts."
             ),
             "COMPUTE": (
-                "Calculate: total PO value (unit × qty + tax + shipping), "
-                "budget impact (% remaining after this PO), "
-                "3-year TCO if it's a multi-year commitment."
+                "Calculate: total purchase order value (unit price times quantity, plus tax and shipping), "
+                "budget impact (percentage of budget remaining after this purchase), "
+                "and 3-year total cost of ownership if this is a multi-year commitment."
             ),
             "POLICY_CHECK": (
-                "Verify: vendor on approved list, amount within requester's PO authority, "
-                "budget available, no conflict of interest flags."
+                "Verify: the vendor is on the approved list, the amount is within the requester's "
+                "purchase authority, the budget is available, and there are no conflict-of-interest flags."
             ),
             "APPROVAL_GATE": (
-                "<$5K: manager. $5K-$50K: VP. >$50K: CFO. "
-                "Present: vendor, line items, computed total, budget impact, policy status."
+                "Purchase authority thresholds: under $5,000 requires manager approval; "
+                "$5,000 to $50,000 requires VP approval; above $50,000 requires CFO approval. "
+                "Present: vendor name, line items, computed total, budget impact, and policy status."
             ),
             "MUTATE": (
-                "Approved. Create PO in system, commit budget, "
-                "send PO to vendor, create Jira ticket for tracking."
+                "Approved. Using the write tools available for this workspace, execute: "
+                "create the purchase order in the system, commit the budget, "
+                "send the PO to the vendor, and create a tracking ticket."
             ),
             "SCHEDULE_NOTIFY": (
-                "Notify requester of PO number. "
-                "Set delivery reminder. "
-                "Alert finance of budget commitment."
+                "Notify the requester of the PO number. "
+                "Set a delivery reminder. "
+                "Alert the finance team of the budget commitment."
             ),
             "COMPLETE": (
-                "PO created. Output: PO number, vendor, amount, "
-                "expected delivery, budget remaining."
+                "Purchase order created. Output: PO number, vendor name, amount, "
+                "expected delivery date, and remaining budget."
             ),
         },
     },
@@ -284,38 +306,40 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["hr", "okta", "jira", "slack", "github", "email"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: employee name, ID, last day, "
+                "Identify: employee name, employee ID, last day of work, "
                 "department, manager, equipment assigned, "
-                "systems with access, and any ongoing projects."
+                "systems with active access, and any ongoing projects."
             ),
             "ASSESS": (
-                "Fetch: full access list (SSO, GitHub, Slack, Jira, AWS), "
-                "equipment checklist, pending PTO balance, "
-                "open projects/tasks assigned to this employee."
+                "Using the read-only tools available for this workspace, retrieve: "
+                "the full list of system access (SSO, code repositories, project management, "
+                "messaging platforms, cloud infrastructure), equipment checklist, "
+                "pending paid time off balance, and open tasks or projects assigned to this employee. "
+                "Look up the employee's access records and asset inventory."
             ),
             "POLICY_CHECK": (
-                "Verify: access revocation timing (immediate for termination, "
-                "on last day for resignation), "
-                "equipment return policy, "
-                "IP/NDA acknowledgment on file."
+                "Verify access revocation timing policy: "
+                "for terminations access must be revoked immediately; "
+                "for voluntary resignations access expires on the last working day. "
+                "Confirm the equipment return policy and that an IP and NDA acknowledgment is on file."
             ),
             "MUTATE": (
-                "Execute in order: "
-                "1. Suspend SSO/Okta account, "
-                "2. Revoke all system access (GitHub, AWS, Jira, Slack), "
-                "3. Transfer owned resources to manager, "
-                "4. Process final PTO payout. "
-                "Log each revocation with timestamp."
+                "Using the write tools available for this workspace, execute in order: "
+                "1. Suspend the primary SSO account, "
+                "2. Revoke all individual system access (code repositories, cloud, project tools, messaging), "
+                "3. Transfer owned resources to the employee's manager, "
+                "4. Process the final PTO payout. "
+                "Log each revocation action with a timestamp."
             ),
             "SCHEDULE_NOTIFY": (
-                "Send: equipment return instructions to employee, "
-                "handover summary to manager, "
-                "IT ticket for laptop retrieval, "
-                "HR closure checklist completed notification."
+                "Send: equipment return instructions to the departing employee, "
+                "a handover summary to the manager, "
+                "an IT ticket for laptop and hardware retrieval, "
+                "and a notification that the HR closure checklist is complete."
             ),
             "COMPLETE": (
-                "Offboarding complete. Output: access revoked (list), "
-                "equipment status, final pay details, handover status."
+                "Offboarding complete. Output: list of access revoked, "
+                "equipment return status, final pay details, and handover status."
             ),
         },
     },
@@ -328,33 +352,36 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["monitoring", "crm", "email", "jira", "pagerduty"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: affected service, customer, breach type "
-                "(uptime/response time/resolution time), "
-                "breach start time, current status."
+                "Identify: affected service, customer name, breach type "
+                "(uptime, response time, or resolution time), "
+                "breach start time, and current status."
             ),
             "ASSESS": (
-                "Fetch: SLA contract terms, actual uptime/response metrics, "
-                "customer tier, credit formula, "
-                "breach history for this customer."
+                "Using the read-only tools available for this workspace, retrieve: "
+                "the SLA contract terms for this customer, actual uptime and response metrics, "
+                "the customer's tier, the credit calculation formula, "
+                "and any breach history for this customer this quarter. "
+                "Look up the customer account and their SLA agreement."
             ),
             "COMPUTE": (
-                "Calculate: breach duration, credit amount per SLA formula, "
-                "cumulative breach penalties this quarter. "
-                "Use compute_sla_credit() for exact credit amount."
+                "Calculate: total breach duration, credit amount per the SLA contract formula, "
+                "and cumulative breach penalties issued this quarter. "
+                "Apply the credit formula precisely using the breach duration."
             ),
             "POLICY_CHECK": (
-                "Verify: credit amount within auto-approve limit, "
-                "no active dispute, customer is current on payments."
+                "Verify: the credit amount is within the auto-approve limit, "
+                "there is no active dispute from this customer, "
+                "and the customer's account is current on payments."
             ),
             "SCHEDULE_NOTIFY": (
-                "Send: breach acknowledgment to customer with credit amount, "
-                "incident report to account manager, "
-                "internal alert to engineering for RCA."
+                "Send: a breach acknowledgment to the customer including the credit amount, "
+                "an incident report to the account manager, "
+                "and an internal alert to the engineering team for root cause analysis."
             ),
             "ESCALATE": (
-                "Escalate to account manager if: "
-                "credit >$10K, customer is strategic, "
-                "or this is the 3rd breach this quarter."
+                "Escalate to the account manager if: "
+                "the credit amount exceeds $10,000, the customer is classified as strategic, "
+                "or this is the third or more breach this quarter."
             ),
         },
     },
@@ -365,26 +392,29 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["crm", "email", "billing", "provisioning"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: customer name, plan, billing contact, "
-                "technical contact, required integrations, go-live date."
+                "Identify: customer name, plan selected, billing contact, "
+                "technical contact, required integrations, and target go-live date."
             ),
             "ASSESS": (
-                "Fetch: account record, signed contract, payment method, "
-                "onboarding checklist template for this plan tier."
+                "Using the read-only tools available for this workspace, retrieve: "
+                "the customer's account record, the signed contract, the payment method on file, "
+                "and the onboarding checklist template for this plan tier. "
+                "Look up the account and contract details."
             ),
             "MUTATE": (
-                "Execute: provision account, set billing plan, "
-                "create welcome email sequence, assign CSM, "
-                "create onboarding Jira epic."
+                "Using the write tools available for this workspace, execute: "
+                "provision the customer account, set the billing plan, "
+                "create the welcome email sequence, assign a customer success manager, "
+                "and create the onboarding project epic."
             ),
             "SCHEDULE_NOTIFY": (
-                "Send: welcome email with credentials, "
-                "kickoff meeting invite, "
-                "30/60/90 day check-in reminders."
+                "Send: a welcome email with login credentials, "
+                "a kickoff meeting invitation, "
+                "and schedule 30-day, 60-day, and 90-day check-in reminders."
             ),
             "COMPLETE": (
                 "Onboarding initiated. Output: account ID, "
-                "CSM assigned, kickoff date, next milestone."
+                "customer success manager assigned, kickoff date, and next milestone."
             ),
         },
     },
@@ -395,32 +425,34 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["crm", "billing", "email", "finance"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: customer, disputed amount, invoice(s), "
-                "dispute reason, date filed, supporting evidence."
+                "Identify: customer name, disputed amount, affected invoice numbers, "
+                "dispute reason, date filed, and any supporting evidence provided."
             ),
             "ASSESS": (
-                "Fetch: original invoice, payment history, "
-                "service delivery records, contract terms, "
-                "prior disputes from this customer."
+                "Using the read-only tools available for this workspace, retrieve: "
+                "the original invoice, the customer's payment history, "
+                "service delivery records for the disputed period, contract terms, "
+                "and any prior disputes from this customer. "
+                "Look up the invoice and customer account records."
             ),
             "POLICY_CHECK": (
-                "Assess validity: is the claim substantiated by evidence? "
-                "Is it within the dispute window (typically 60 days)? "
-                "What resolution options are allowed per contract?"
+                "Assess the claim's validity: is it substantiated by evidence? "
+                "Was it filed within the dispute window (typically 60 days)? "
+                "What resolution options are permitted under the contract terms?"
             ),
             "APPROVAL_GATE": (
-                "Resolution requires approval if credit >$1K. "
+                "Resolution requires approval if the credit amount exceeds $1,000. "
                 "Present: claim summary, evidence assessment, "
-                "proposed resolution, financial impact."
+                "proposed resolution, and financial impact."
             ),
             "MUTATE": (
-                "Execute resolution: issue credit memo, "
-                "adjust invoice, or decline with explanation. "
-                "Document decision with evidence references."
+                "Using the write tools available for this workspace, execute the resolution: "
+                "issue a credit memo, adjust the invoice, or decline with a written explanation. "
+                "Document the decision with references to supporting evidence."
             ),
             "COMPLETE": (
-                "Dispute resolved. Output: outcome (approved/partial/declined), "
-                "credit amount if any, customer notification sent."
+                "Dispute resolved. Output: outcome (approved, partial, or declined), "
+                "credit amount if any, and confirmation that customer notification was sent."
             ),
         },
     },
@@ -431,33 +463,35 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["erp", "inventory", "shipping", "crm"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: order number, customer, line items, "
+                "Identify: order number, customer name, line items, "
                 "quantities, pricing, shipping address, "
-                "requested delivery date."
+                "and requested delivery date."
             ),
             "ASSESS": (
-                "Fetch: inventory levels for each item, "
-                "pricing from current price book, "
-                "customer credit status, any backorder alerts."
+                "Using the read-only tools available for this workspace, retrieve: "
+                "inventory levels for each line item, current pricing from the price book, "
+                "the customer's credit status, and any backorder alerts. "
+                "Look up inventory records and the customer account."
             ),
             "COMPUTE": (
-                "Calculate: order total (unit price × qty), "
-                "shipping cost (weight/zone), tax by jurisdiction, "
-                "discount if applicable (volume or contract)."
+                "Calculate: order total (unit price times quantity for each line), "
+                "shipping cost based on weight and destination zone, "
+                "tax by jurisdiction, and any applicable discount "
+                "(volume discount or contract pricing)."
             ),
             "APPROVAL_GATE": (
-                "Approval required if: order >$10K, "
-                "customer on credit hold, or items on allocation. "
-                "Present order summary with totals."
+                "Approval required if: order total exceeds $10,000, "
+                "the customer is on a credit hold, or any items are on allocation. "
+                "Present the full order summary with computed totals."
             ),
             "MUTATE": (
-                "Confirmed. Execute: reserve inventory, "
-                "create fulfillment request, charge payment, "
-                "generate order confirmation."
+                "Order confirmed. Using the write tools available for this workspace, execute: "
+                "reserve the inventory, create the fulfillment request, "
+                "charge the payment method, and generate the order confirmation."
             ),
             "COMPLETE": (
                 "Order placed. Output: order number, "
-                "items reserved, estimated ship date, total charged."
+                "items reserved, estimated ship date, and total amount charged."
             ),
         },
     },
@@ -468,43 +502,45 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["grc", "audit", "finance", "hr", "security"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: audit scope (SOX/GDPR/PCI/ISO), "
+                "Identify: audit scope (SOX, GDPR, PCI, ISO, or other), "
                 "audit period, entities in scope, "
-                "auditor (internal/external), key controls to test."
+                "auditor type (internal or external), and key controls to test."
             ),
             "ASSESS": (
-                "Fetch: control documentation, prior audit findings, "
-                "evidence samples for each control, "
-                "open remediation items from last audit."
+                "Using the read-only tools available for this workspace, retrieve: "
+                "control documentation, prior audit findings, "
+                "evidence samples for each control under review, "
+                "and open remediation items from the last audit. "
+                "Look up each control and its associated evidence records."
             ),
             "COMPUTE": (
-                "Score: control effectiveness per evidence, "
-                "risk rating for each finding (critical/high/medium/low), "
-                "overall compliance score."
+                "Score: control effectiveness based on evidence quality, "
+                "risk rating for each finding (critical, high, medium, or low), "
+                "and calculate the overall compliance score."
             ),
             "POLICY_CHECK": (
-                "Flag: any critical or high findings, "
-                "repeat findings from prior audit (indicates systemic issue), "
-                "controls with no evidence (automatic fail)."
+                "Flag: any critical or high severity findings, "
+                "repeat findings from the prior audit (indicates a systemic issue), "
+                "and any controls with no evidence present (automatic fail)."
             ),
             "APPROVAL_GATE": (
                 "Audit report requires sign-off before distribution. "
-                "Present: findings count by severity, "
-                "compliance score, critical items for immediate action."
+                "Present: findings count by severity, overall compliance score, "
+                "and critical items requiring immediate action."
             ),
             "MUTATE": (
-                "Finalize: publish audit report, "
-                "create remediation tasks for each finding, "
-                "set remediation deadlines per severity."
+                "Using the write tools available for this workspace, finalize: "
+                "publish the audit report, create remediation tasks for each finding, "
+                "and set remediation deadlines based on severity level."
             ),
             "SCHEDULE_NOTIFY": (
-                "Notify: control owners of their findings, "
-                "management of critical items, "
-                "schedule 30-day remediation check-in."
+                "Notify: control owners of their specific findings, "
+                "management of all critical items, "
+                "and schedule a 30-day remediation check-in."
             ),
             "COMPLETE": (
-                "Audit complete. Output: findings summary, "
-                "compliance score, critical actions, report location."
+                "Audit complete. Output: findings summary by severity, "
+                "compliance score, critical action items, and report location."
             ),
         },
     },
@@ -515,39 +551,43 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["pagerduty", "jira", "slack", "monitoring", "aws"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: severity (P1/P2/P3), affected systems/services, "
+                "Identify: severity level (P1, P2, or P3), affected systems and services, "
                 "impacted customers, symptom description, "
-                "first reported time, current status."
+                "first reported time, and current status."
             ),
             "ASSESS": (
-                "Fetch: system health metrics, recent deployments, "
-                "similar past incidents, on-call engineer, "
-                "affected customer count."
+                "Using the read-only tools available for this workspace, retrieve: "
+                "system health metrics, recent deployments in the affected area, "
+                "similar past incidents, the on-call engineer contact, "
+                "and the count of affected customers. "
+                "Look up monitoring dashboards and the incident history."
             ),
             "COMPUTE": (
-                "Calculate: customer impact (# affected × SLA tier), "
-                "estimated revenue at risk per hour, "
-                "SLA credit exposure if breach occurs."
+                "Calculate: total customer impact (number affected multiplied by SLA tier weight), "
+                "estimated revenue at risk per hour of downtime, "
+                "and SLA credit exposure if a breach occurs."
             ),
             "APPROVAL_GATE": (
-                "P1 incidents: VP Engineering must approve comms plan. "
-                "Present: impact scope, mitigation options, "
-                "customer communication draft."
+                "P1 incidents require VP of Engineering approval of the communications plan. "
+                "Present: impact scope, available mitigation options, "
+                "and a draft customer communication."
             ),
             "MUTATE": (
-                "Execute mitigation: run rollback/hotfix commands, "
-                "scale resources, enable circuit breakers. "
-                "Update incident ticket with each action."
+                "Using the write tools available for this workspace, execute mitigation: "
+                "initiate rollback or hotfix procedures, scale affected resources, "
+                "enable circuit breakers as needed. "
+                "Update the incident ticket with each action taken and its outcome."
             ),
             "SCHEDULE_NOTIFY": (
-                "Send: status page update, customer notifications, "
-                "internal Slack bridge message. "
-                "Schedule post-mortem for next business day."
+                "Send: status page update for affected customers, "
+                "direct customer notifications per SLA requirements, "
+                "and an internal incident bridge message. "
+                "Schedule the post-mortem for the next business day."
             ),
             "COMPLETE": (
-                "Incident resolved. Output: root cause, "
-                "resolution steps, duration, customer impact, "
-                "post-mortem scheduled date."
+                "Incident resolved. Output: root cause, resolution steps taken, "
+                "total duration, customer impact summary, "
+                "and scheduled post-mortem date."
             ),
         },
     },
@@ -558,41 +598,44 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
         "connector_hints": ["billing", "crm", "email", "provisioning"],
         "state_instructions": {
             "DECOMPOSE": (
-                "Identify: customer, current plan, target plan, "
-                "migration date, reason for change (upgrade/downgrade/cancel), "
-                "billing cycle alignment needed."
+                "Identify: customer name, current plan, target plan, "
+                "migration date, reason for change (upgrade, downgrade, or cancellation), "
+                "and whether billing cycle alignment is needed."
             ),
             "ASSESS": (
-                "Fetch: current subscription details, usage metrics, "
-                "billing history, contract terms (early termination fees?), "
-                "features that will be gained/lost."
+                "Using the read-only tools available for this workspace, retrieve: "
+                "current subscription details, usage metrics for the current plan, "
+                "full billing history, contract terms (including early termination fees), "
+                "and the feature differences between current and target plans. "
+                "Look up the subscription record and contract."
             ),
             "COMPUTE": (
-                "Calculate: prorated credit for remaining days on current plan, "
-                "new plan cost, early termination fee if applicable, "
-                "net charge or refund at migration."
+                "Calculate: prorated credit for remaining days on the current plan, "
+                "new plan cost going forward, early termination fee if applicable, "
+                "and the net charge or refund at time of migration."
             ),
             "POLICY_CHECK": (
-                "Verify: customer is eligible for target plan, "
-                "no outstanding balance, "
-                "data migration required (downgrade may require data deletion)."
+                "Verify: the customer is eligible for the target plan, "
+                "there is no outstanding balance on the account, "
+                "and whether the downgrade requires data deletion or data migration."
             ),
             "APPROVAL_GATE": (
-                "5-step confirmation required for data-destructive downgrades: "
-                "1. Customer confirms plan change, "
-                "2. Customer confirms feature loss, "
-                "3. Customer confirms data deletion scope, "
-                "4. Customer confirms billing change, "
-                "5. Final irreversible execution confirmation."
+                "For data-destructive downgrades, a 5-step explicit confirmation is required: "
+                "1. Customer confirms the plan change, "
+                "2. Customer confirms awareness of feature loss, "
+                "3. Customer confirms the scope of data deletion, "
+                "4. Customer confirms the billing change amount, "
+                "5. Customer gives final irreversible execution confirmation."
             ),
             "MUTATE": (
-                "All confirmations received. Execute: update subscription, "
-                "apply proration credit, charge/refund delta, "
-                "provision/deprovision features."
+                "All confirmations received. Using the write tools available for this workspace, execute: "
+                "update the subscription record, apply the proration credit, "
+                "process the charge or refund for the delta, "
+                "and provision or deprovision features as required."
             ),
             "COMPLETE": (
                 "Migration complete. Output: new plan name, "
-                "billing change, effective date, features changed."
+                "billing change amount, effective date, and list of features changed."
             ),
         },
     },
@@ -607,31 +650,31 @@ PROCESS_DEFINITIONS: dict[str, dict] = {
             "DECOMPOSE": (
                 "Break the task into sub-tasks. Identify all entities, "
                 "IDs, amounts, and parties involved. "
-                "List what data you need before acting."
+                "List what data you need to collect before taking any action."
             ),
             "ASSESS": (
-                "Collect all required data using read-only tools. "
-                "Do NOT take actions yet. "
-                "Fetch records, check statuses, retrieve documents."
+                "Using the read-only tools available for this workspace, collect all required data. "
+                "Do NOT take any write actions yet. "
+                "Retrieve records, check statuses, and look up documents."
             ),
             "COMPUTE": (
-                "Run any required calculations using collected data. "
-                "Do not call tools — work with data already fetched."
+                "Run any required calculations using the data already collected. "
+                "Do not call additional tools at this stage — work with data already fetched."
             ),
             "POLICY_CHECK": (
                 "Verify all rules, thresholds, and constraints "
                 "before executing any changes."
             ),
             "APPROVAL_GATE": (
-                "Present proposed actions for approval. "
-                "List exactly what will change and the business justification."
+                "Present the proposed actions for approval. "
+                "List exactly what will change and the business justification for each change."
             ),
             "MUTATE": (
-                "Execute all required state changes. "
+                "Using the write tools available for this workspace, execute all required changes. "
                 "Log each action with its outcome."
             ),
             "SCHEDULE_NOTIFY": (
-                "Send all relevant notifications and schedule follow-ups."
+                "Send all relevant notifications and schedule follow-up actions."
             ),
             "COMPLETE": (
                 "Summarize all completed actions and their outcomes."

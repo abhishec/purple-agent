@@ -1,5 +1,7 @@
 from __future__ import annotations
+import json
 import os
+import time
 import uuid
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -73,3 +75,148 @@ async def a2a_handler(request: Request):
             "artifacts": [{"parts": [{"text": answer}]}],
         },
     }
+
+
+@app.get("/rl/status")
+async def rl_status():
+    """
+    RL and knowledge base status endpoint.
+    Returns case log stats, knowledge base summary, entity memory stats,
+    and knowledge growth rate from the growth log.
+
+    New fields added (2026-03-01):
+      - knowledge_base.total_entries
+      - knowledge_base.domains_covered
+      - knowledge_base.growth_rate (computed from knowledge_growth.log)
+      - knowledge_base.last_extraction
+      - entity_memory.total_entities
+      - entity_memory.recurring_entities (seen_count >= 2)
+    """
+    base_dir = os.path.join(os.path.dirname(__file__), "..")
+
+    # ── Case log stats ────────────────────────────────────────────────────────
+    case_log_path = os.path.join(base_dir, "case_log.json")
+    case_stats: dict = {"total": 0, "successes": 0, "failures": 0, "avg_quality": 0.0}
+    try:
+        if os.path.exists(case_log_path):
+            with open(case_log_path) as f:
+                cases = json.load(f)
+            if cases:
+                qualities = [c.get("quality", 0) for c in cases]
+                case_stats = {
+                    "total": len(cases),
+                    "successes": sum(1 for c in cases if c.get("outcome") == "success"),
+                    "failures": sum(1 for c in cases if c.get("outcome") == "failure"),
+                    "avg_quality": round(sum(qualities) / len(qualities), 3),
+                }
+    except Exception:
+        pass
+
+    # ── Knowledge base stats ──────────────────────────────────────────────────
+    kb_path = os.path.join(base_dir, "knowledge_base.json")
+    kb_stats: dict = {
+        "total_entries": 0,
+        "domains_covered": [],
+        "growth_rate": "0 entries/hour",
+        "last_extraction": None,
+        "by_extraction_method": {},
+    }
+    try:
+        if os.path.exists(kb_path):
+            with open(kb_path) as f:
+                kb_entries = json.load(f)
+            domains = list({e.get("domain", "unknown") for e in kb_entries})
+            methods: dict[str, int] = {}
+            for e in kb_entries:
+                m = e.get("extraction_method", "haiku")
+                methods[m] = methods.get(m, 0) + 1
+            last_ts = max((e.get("created_at", 0) for e in kb_entries), default=0)
+            kb_stats = {
+                "total_entries": len(kb_entries),
+                "domains_covered": sorted(domains),
+                "growth_rate": _compute_growth_rate(base_dir),
+                "last_extraction": (
+                    time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(last_ts))
+                    if last_ts else None
+                ),
+                "by_extraction_method": methods,
+            }
+    except Exception:
+        pass
+
+    # ── Entity memory stats ───────────────────────────────────────────────────
+    entity_path = os.path.join(base_dir, "entity_memory.json")
+    entity_stats: dict = {"total_entities": 0, "recurring_entities": 0, "by_type": {}}
+    try:
+        if os.path.exists(entity_path):
+            with open(entity_path) as f:
+                entity_records = json.load(f)
+            type_counts: dict[str, int] = {}
+            for r in entity_records:
+                t = r.get("entity_type", "unknown")
+                type_counts[t] = type_counts.get(t, 0) + 1
+            entity_stats = {
+                "total_entities": len(entity_records),
+                "recurring_entities": sum(
+                    1 for r in entity_records if r.get("seen_count", 1) >= 2
+                ),
+                "by_type": type_counts,
+            }
+    except Exception:
+        pass
+
+    return {
+        "case_log": case_stats,
+        "knowledge_base": kb_stats,
+        "entity_memory": entity_stats,
+    }
+
+
+def _compute_growth_rate(base_dir: str) -> str:
+    """
+    Compute knowledge growth rate from the last 10 lines of knowledge_growth.log.
+    Returns a human-readable string like "3 entries/hour".
+    """
+    growth_log = os.path.join(base_dir, "knowledge_growth.log")
+    try:
+        if not os.path.exists(growth_log):
+            return "0 entries/hour"
+
+        with open(growth_log) as f:
+            lines = f.readlines()
+
+        # Take the last 10 entries
+        recent = [ln.strip() for ln in lines[-10:] if ln.strip()]
+        if not recent:
+            return "0 entries/hour"
+
+        # Parse timestamps from log lines: "2026-03-01T12:34:56 domain=... new=N total=N"
+        import re as _re
+        entries_total = 0
+        first_ts = None
+        last_ts = None
+
+        for ln in recent:
+            ts_m = _re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})', ln)
+            new_m = _re.search(r'new=(\d+)', ln)
+            if ts_m and new_m:
+                ts_str = ts_m.group(1)
+                ts = time.mktime(time.strptime(ts_str, "%Y-%m-%dT%H:%M:%S"))
+                new = int(new_m.group(1))
+                entries_total += new
+                if first_ts is None:
+                    first_ts = ts
+                last_ts = ts
+
+        if first_ts is None or last_ts is None or last_ts == first_ts:
+            return f"{entries_total} entries (window too short)"
+
+        elapsed_hours = (last_ts - first_ts) / 3600
+        if elapsed_hours < 0.01:
+            return f"{entries_total} entries (window too short)"
+
+        rate = entries_total / elapsed_hours
+        return f"{rate:.1f} entries/hour"
+
+    except Exception:
+        return "unknown"

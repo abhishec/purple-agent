@@ -79,10 +79,9 @@ class TokenBudget:
 
         tier = STATE_MODEL.get(fsm_state, "haiku")
         if tier == "sonnet":
-            # Downgrade complex-but-cheap tasks
+            # Downgrade to Haiku for simple tasks that don't need Sonnet reasoning
             if not any(kw in task_text.lower() for kw in COMPLEX_KEYWORDS):
-                if fsm_state == "EXECUTE":
-                    return MODELS["sonnet"]
+                return MODELS["haiku"]
             return MODELS["sonnet"]
         return MODELS["haiku"]
 
@@ -92,6 +91,7 @@ class TokenBudget:
         if r < 500:   return 256
         if r < 2000:  return 512
         # All active execution states get full 4096 budget
+        # COMPUTE added: mathematical reasoning needs the full token budget
         ACTIVE_STATES = {"EXECUTE", "DECOMPOSE", "ASSESS", "COMPUTE", "MUTATE", "SCHEDULE_NOTIFY"}
         if fsm_state in ACTIVE_STATES: return min(4096, r // 2)
         return min(1024, r // 3)

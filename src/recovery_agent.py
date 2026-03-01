@@ -6,7 +6,7 @@ When a tool call returns an error, empty result, or stale data, the recovery
 agent tries up to 4 strategies before graceful degradation:
 
   Strategy 1: Retry with corrected params (schema adapter already does this)
-  Strategy 2: Try a synonym/alternative tool name
+  Strategy 2: Try a dynamic synonym/alternative tool name via difflib
   Strategy 3: Decompose — split into smaller sub-calls
   Strategy 4: Ask Haiku for an alternative approach
   Strategy 5: Partial answer with what we have (graceful degrade)
@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from difflib import get_close_matches, SequenceMatcher
 from typing import Callable, Awaitable, Any
 
 from src.config import ANTHROPIC_API_KEY
@@ -35,26 +36,6 @@ class RecoveryResult:
     attempts: int
 
 
-# ── Tool synonym map (alternative names for common tools) ─────────────────────
-# If tool_name fails, try these synonyms in order
-
-_TOOL_SYNONYMS: dict[str, list[str]] = {
-    "get_vendor":            ["fetch_vendor", "lookup_vendor", "search_vendor", "get_supplier"],
-    "get_employee":          ["fetch_employee", "lookup_employee", "get_user", "get_staff"],
-    "get_invoice":           ["fetch_invoice", "lookup_invoice", "get_bill"],
-    "get_purchase_order":    ["fetch_po", "get_po", "lookup_po", "fetch_purchase_order"],
-    "get_customer":          ["fetch_customer", "lookup_customer", "get_account"],
-    "get_budget_balance":    ["fetch_budget", "get_budget", "check_budget", "get_funds"],
-    "list_expenses":         ["get_expenses", "fetch_expenses", "search_expenses"],
-    "list_contracts":        ["get_contracts", "fetch_contracts", "search_contracts"],
-    "create_expense":        ["submit_expense", "log_expense", "record_expense"],
-    "create_purchase_order": ["submit_po", "create_po", "place_order"],
-    "send_notification":     ["send_email", "notify_user", "post_message", "send_alert"],
-    "send_email":            ["send_notification", "notify_user", "post_message"],
-    "post_message":          ["send_slack", "send_notification", "send_message"],
-}
-
-
 def _is_empty_result(result: Any) -> bool:
     """True if the tool result is effectively empty/failed."""
     if result is None:
@@ -62,8 +43,11 @@ def _is_empty_result(result: Any) -> bool:
     if isinstance(result, dict):
         if result.get("error"):
             return True
-        if "data" in result and not result["data"]:
-            return True
+        # Check all common collection keys for empty collections
+        for key in ("data", "items", "records", "rows", "list", "results"):
+            val = result.get(key)
+            if val is not None and isinstance(val, (list, dict)) and len(val) == 0:
+                return True
         if result == {} or result == {"status": "error"}:
             return True
     if isinstance(result, list) and len(result) == 0:
@@ -80,24 +64,70 @@ def _is_error_result(result: Any) -> bool:
 
 # ── Recovery strategies ───────────────────────────────────────────────────────
 
-async def _try_synonym(
+async def _try_dynamic_synonym(
     tool_name: str,
     params: dict,
     call_fn: Callable,
     available_tools: list[dict],
 ) -> Any | None:
-    """Strategy 2: try alternative tool names."""
-    synonyms = _TOOL_SYNONYMS.get(tool_name, [])
-    available_names = {t.get("name") for t in available_tools if t.get("name")}
+    """
+    Strategy 2: dynamically find alternative tool names via difflib similarity.
 
-    for syn in synonyms:
-        if syn in available_names:
-            try:
-                result = await asyncio.wait_for(call_fn(syn, params), timeout=RECOVERY_TIMEOUT)
-                if not _is_empty_result(result):
-                    return result
-            except Exception:
-                continue
+    Replaces the static _TOOL_SYNONYMS dict (13 hardcoded entries) with a
+    multi-tier similarity search across all tools actually available at runtime.
+
+    Tiers:
+      1. Same verb prefix + closest noun (e.g. get_employee → get_staff if closer noun)
+      2. Full-name difflib similarity (cutoff 0.55)
+      3. Levenshtein ratio fallback (>0.5)
+    """
+    available_names = [
+        t.get("name", "")
+        for t in available_tools
+        if t.get("name") and t.get("name") != tool_name
+    ]
+    if not available_names:
+        return None
+
+    candidates: list[str] = []
+
+    # Tier 1: same verb prefix, closest noun match
+    parts = tool_name.split("_")
+    verb = parts[0] if parts else ""
+    noun = "_".join(parts[1:]) if len(parts) > 1 else ""
+
+    same_verb = [n for n in available_names if n.startswith(verb + "_")]
+    if noun and same_verb:
+        nouns_in_family = {"_".join(n.split("_")[1:]): n for n in same_verb}
+        close_nouns = get_close_matches(noun, list(nouns_in_family.keys()), n=3, cutoff=0.5)
+        for cn in close_nouns:
+            full_name = nouns_in_family[cn]
+            if full_name not in candidates:
+                candidates.append(full_name)
+
+    # Tier 2: full-name difflib similarity
+    close = get_close_matches(tool_name, available_names, n=3, cutoff=0.55)
+    for c in close:
+        if c not in candidates:
+            candidates.append(c)
+
+    # Tier 3: Levenshtein ratio fallback
+    if not candidates:
+        scored = [
+            (SequenceMatcher(None, tool_name, n).ratio(), n)
+            for n in available_names
+        ]
+        scored.sort(reverse=True)
+        candidates = [n for ratio, n in scored[:3] if ratio > 0.5]
+
+    for candidate in candidates[:4]:
+        try:
+            result = await asyncio.wait_for(call_fn(candidate, params), timeout=RECOVERY_TIMEOUT)
+            if not _is_empty_result(result):
+                return result
+        except Exception:
+            continue
+
     return None
 
 
@@ -137,7 +167,8 @@ async def _ask_haiku_alternative(
         return ""
     try:
         import anthropic
-        tool_list = [t.get("name") for t in available_tools[:15] if t.get("name")]
+        # Expanded to 30 tools (was 15) for better coverage in large tool sets
+        tool_list = [t.get("name") for t in available_tools[:30] if t.get("name")]
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         resp = await asyncio.wait_for(
             client.messages.create(
@@ -183,15 +214,15 @@ async def recover_tool_call(
 
     attempts = 0
 
-    # Strategy 2: synonym tools
+    # Strategy 2: dynamic synonym tools (replaces static _TOOL_SYNONYMS dict)
     attempts += 1
-    syn_result = await _try_synonym(tool_name, params, call_fn, available_tools)
+    syn_result = await _try_dynamic_synonym(tool_name, params, call_fn, available_tools)
     if syn_result is not None:
         return RecoveryResult(
             recovered=True,
             strategy="synonym",
             result=syn_result,
-            explanation=f"Recovered '{tool_name}' using synonym tool",
+            explanation=f"Recovered '{tool_name}' using dynamically matched synonym tool",
             attempts=attempts,
         )
 

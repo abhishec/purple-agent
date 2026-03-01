@@ -8,6 +8,8 @@ When a tool call fails with "column not found":
 2. Fuzzy-match closest column name (Levenshtein via difflib)
 3. Retry with corrected name
 4. Cache mapping for this session
+
+Also handles empty results that indicate column filter drift (Fix A).
 """
 from __future__ import annotations
 import re
@@ -17,15 +19,20 @@ from typing import Callable, Awaitable
 # Canonical → known aliases (mirrors BrainOS KNOWN_COLUMN_ALIASES)
 KNOWN_COLUMN_ALIASES: dict[str, list[str]] = {
     "client_name":      ["customer_name", "account_name", "company_name", "org_name"],
-    "created_at":       ["created_date", "creation_date", "date_created", "timestamp"],
-    "updated_at":       ["updated_date", "modification_date", "last_modified", "modified_at"],
     "amount":           ["value", "total", "price", "cost", "sum", "total_amount"],
-    "status":           ["state", "stage", "condition", "current_status"],
-    "user_id":          ["owner_id", "creator_id", "assigned_to", "employee_id"],
-    "description":      ["details", "notes", "comments", "body", "content"],
-    "email":            ["email_address", "contact_email", "user_email"],
+    "user_id":          ["creator_id", "employee_id"],
     "name":             ["title", "label", "display_name", "full_name"],
     "category":         ["type", "classification", "group", "kind"],
+    # Extended aliases (Fix C)
+    "email":            ["em", "e_mail", "email_address", "contact_email", "mail"],
+    "status":           ["st", "stat", "state", "state_code", "current_status"],
+    "owner_id":         ["oid", "owner", "asgn", "assigned_to", "assignee_id"],
+    "created_at":       ["created", "create_date", "creation_date", "ts",
+                         "created_date", "date_created", "timestamp"],
+    "updated_at":       ["updated", "update_date", "modified_at", "last_modified",
+                         "updated_date", "modification_date"],
+    "description":      ["desc", "descr", "detail", "details", "notes",
+                         "comments", "body", "content"],
 }
 
 SCHEMA_ERROR_PATTERNS = [
@@ -36,6 +43,25 @@ SCHEMA_ERROR_PATTERNS = [
     r"field[s]?\s+['\"]?(\w+)['\"]?\s+(?:not found|does not exist)",
     r"KeyError:\s+['\"]?(\w+)['\"]?",
 ]
+
+# Keys whose empty value signals a filtered-but-drifted query (Fix A)
+_EMPTY_RESULT_KEYS = ("data", "items", "records", "results", "rows", "list")
+
+
+def _result_is_empty_due_to_drift(result: dict) -> bool:
+    """
+    Return True when a successful (non-error) tool result has an empty collection
+    that may indicate a column filter matched nothing due to schema drift.
+    """
+    if not isinstance(result, dict):
+        return False
+    if "error" in str(result).lower():
+        return False
+    for key in _EMPTY_RESULT_KEYS:
+        val = result.get(key)
+        if val is not None and isinstance(val, (list, dict)) and len(val) == 0:
+            return True
+    return False
 
 
 def detect_schema_error(error_text: str) -> str | None:
@@ -51,14 +77,23 @@ def detect_schema_error(error_text: str) -> str | None:
 def fuzzy_match_column(bad_col: str, candidates: list[str]) -> str | None:
     """
     Match bad_col to closest candidate.
-    Order: exact → known alias → difflib close match → Levenshtein ratio.
+    Order:
+      Tier 1: exact match
+      Tier 2: known alias lookup
+      Tier 3: difflib close match (cutoff 0.6, or 0.5 for short abbreviations)
+      Tier 4: Levenshtein ratio fallback (>0.7)
+      Tier 5: prefix matching (bad_col is prefix of candidate, or vice versa)
+
     Mirrors BrainOS fuzzyMatchColumn().
     """
-    # Exact
+    if not candidates:
+        return None
+
+    # Tier 1: Exact match
     if bad_col in candidates:
         return bad_col
 
-    # Known alias lookup
+    # Tier 2: Known alias lookup (both directions)
     for canonical, aliases in KNOWN_COLUMN_ALIASES.items():
         if bad_col in aliases and canonical in candidates:
             return canonical
@@ -67,12 +102,14 @@ def fuzzy_match_column(bad_col: str, candidates: list[str]) -> str | None:
             if match:
                 return match
 
-    # difflib close match (cutoff 0.6)
-    matches = get_close_matches(bad_col, candidates, n=1, cutoff=0.6)
+    # Tier 3: difflib close match
+    # Lower cutoff for short abbreviations (len <= 3) — e.g. "em", "st", "ts"
+    cutoff = 0.5 if len(bad_col) <= 3 else 0.6
+    matches = get_close_matches(bad_col, candidates, n=1, cutoff=cutoff)
     if matches:
         return matches[0]
 
-    # Levenshtein ratio fallback (>0.7)
+    # Tier 4: Levenshtein ratio fallback (>0.7)
     best, best_ratio = None, 0.0
     for c in candidates:
         ratio = SequenceMatcher(None, bad_col, c).ratio()
@@ -80,6 +117,17 @@ def fuzzy_match_column(bad_col: str, candidates: list[str]) -> str | None:
             best_ratio, best = ratio, c
     if best and best_ratio > 0.7:
         return best
+
+    # Tier 5: Prefix matching
+    # bad_col is a prefix of a candidate (e.g. "own" → "owner_id")
+    prefix_candidates = [c for c in candidates if c.startswith(bad_col)]
+    if prefix_candidates:
+        # Prefer shortest match (most specific prefix hit)
+        return min(prefix_candidates, key=len)
+    # Or a candidate is a prefix of bad_col (e.g. "email" candidate, "email_addr" bad_col)
+    suffix_candidates = [c for c in candidates if bad_col.startswith(c)]
+    if suffix_candidates:
+        return max(suffix_candidates, key=len)
 
     return None
 
@@ -103,6 +151,74 @@ def _replace_in_params(params: dict, bad: str, good: str) -> dict:
     return result
 
 
+async def _attempt_schema_correction(
+    tool_name: str,
+    params: dict,
+    error_text: str,
+    on_tool_call: Callable[[str, dict], Awaitable[dict]],
+    schema_cache: dict,
+) -> dict | None:
+    """
+    Core correction logic: introspect schema, fuzzy-match the bad column,
+    retry with corrected params. Returns corrected result or None if unable.
+    """
+    bad_col = detect_schema_error(error_text) if error_text else None
+
+    # For empty-result drift we attempt correction even without a named bad column.
+    # Try each param key that looks like a column filter.
+    cols_to_try: list[str] = []
+    if bad_col:
+        cols_to_try = [bad_col]
+    else:
+        # Heuristic: string-valued params other than id/session fields may be column filters
+        cols_to_try = [
+            k for k, v in params.items()
+            if isinstance(v, str) and k not in ("table", "table_name", "resource",
+                                                  "session_id", "organization_id")
+        ]
+
+    if not cols_to_try:
+        return None
+
+    # Introspect schema once
+    table = params.get("table") or params.get("table_name") or params.get("resource", "")
+    schema_result = None
+    for schema_tool in ["describe_table", "get_schema", "list_columns", "schema_introspect"]:
+        try:
+            r = await on_tool_call(schema_tool, {"table": table} if table else {})
+            if not (isinstance(r, dict) and "error" in r):
+                schema_result = r
+                break
+        except Exception:
+            continue
+
+    if not schema_result:
+        return None
+
+    schema_text = str(schema_result)
+    columns = list(set(re.findall(r'\b([a-z_][a-z0-9_]{2,})\b', schema_text.lower())))
+
+    corrected_params = dict(params)
+    made_correction = False
+    for col in cols_to_try:
+        cache_key = f"{tool_name}:{col}"
+        if cache_key in schema_cache:
+            corrected = schema_cache[cache_key]
+        else:
+            corrected = fuzzy_match_column(col, columns)
+            if corrected:
+                schema_cache[cache_key] = corrected
+
+        if corrected and corrected != col:
+            corrected_params = _replace_in_params(corrected_params, col, corrected)
+            made_correction = True
+
+    if not made_correction:
+        return None
+
+    return await on_tool_call(tool_name, corrected_params)
+
+
 async def resilient_tool_call(
     tool_name: str,
     params: dict,
@@ -111,49 +227,30 @@ async def resilient_tool_call(
 ) -> dict:
     """
     Wrapper around on_tool_call with schema drift retry.
-    If call fails with a column error:
-    1. Introspect schema
-    2. Fuzzy-match the bad column
-    3. Retry once with corrected params
+
+    Error path: if call fails with a column error → introspect → fuzzy-match → retry.
+    Empty result path (Fix A): if call succeeds but returns empty collection
+    → also attempt column correction (filter may reference a drifted column name).
     """
     result = await on_tool_call(tool_name, params)
     error_text = str(result.get("error", "")) if isinstance(result, dict) else str(result)
+    has_error = bool(error_text) and "error" in error_text.lower()
 
-    if not error_text or "error" not in error_text.lower():
-        return result  # success
+    if has_error:
+        # Standard error correction path
+        corrected = await _attempt_schema_correction(
+            tool_name, params, error_text, on_tool_call, schema_cache
+        )
+        if corrected is not None:
+            return corrected
+        return result
 
-    bad_col = detect_schema_error(error_text)
-    if not bad_col:
-        return result  # not a schema error
+    # Fix A: empty result path — may indicate column filter drift
+    if _result_is_empty_due_to_drift(result):
+        corrected = await _attempt_schema_correction(
+            tool_name, params, "", on_tool_call, schema_cache
+        )
+        if corrected is not None and not _result_is_empty_due_to_drift(corrected):
+            return corrected
 
-    # Check cache
-    cache_key = f"{tool_name}:{bad_col}"
-    if cache_key in schema_cache:
-        corrected = schema_cache[cache_key]
-    else:
-        # Introspect schema
-        table = params.get("table") or params.get("table_name") or params.get("resource", "")
-        schema_result = None
-        for schema_tool in ["describe_table", "get_schema", "list_columns", "schema_introspect"]:
-            try:
-                r = await on_tool_call(schema_tool, {"table": table} if table else {})
-                if not (isinstance(r, dict) and "error" in r):
-                    schema_result = r
-                    break
-            except Exception:
-                continue
-
-        if not schema_result:
-            return result
-
-        # Extract columns from schema response
-        schema_text = str(schema_result)
-        columns = list(set(re.findall(r'\b([a-z_][a-z0-9_]{2,})\b', schema_text.lower())))
-        corrected = fuzzy_match_column(bad_col, columns)
-        if not corrected:
-            return result
-
-        schema_cache[cache_key] = corrected
-
-    corrected_params = _replace_in_params(params, bad_col, corrected)
-    return await on_tool_call(tool_name, corrected_params)
+    return result

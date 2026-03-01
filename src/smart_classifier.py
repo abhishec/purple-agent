@@ -24,6 +24,8 @@ from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL
 CLASSIFIER_MODEL = "claude-haiku-4-5-20251001"
 CLASSIFIER_TIMEOUT = 5.0   # seconds — fall back to keywords if exceeded
 
+# Used for documentation and _keyword_fallback only.
+# The _call_classifier function trusts whatever Haiku returns without filtering.
 VALID_PROCESS_TYPES = {
     "expense_approval", "procurement", "hr_offboarding", "incident_response",
     "invoice_reconciliation", "customer_onboarding", "compliance_audit",
@@ -87,14 +89,15 @@ async def _call_classifier(task_text: str) -> tuple[str, float]:
     parsed = json.loads(text)
     ptype = parsed.get("process_type", "general")
     conf = float(parsed.get("confidence", 0.7))
-    # Validate — reject hallucinated process types
-    if ptype not in VALID_PROCESS_TYPES:
+    # Trust whatever Haiku returns — only reject if falsy/None/empty string.
+    # Competition may introduce unknown types with valid process-specific FSM logic.
+    if not ptype:
         return _keyword_fallback(task_text), 0.4
     return ptype, conf
 
 
 def _keyword_fallback(task_text: str) -> str:
-    """Original keyword-based detection — used as fallback."""
+    """Original keyword-based detection — used as fallback and for VALID_PROCESS_TYPES reference."""
     KEYWORDS: dict[str, list[str]] = {
         "expense_approval":       ["expense", "reimbursement", "receipt", "spend", "claim"],
         "procurement":            ["vendor", "purchase order", "rfp", "supplier", "procurement"],

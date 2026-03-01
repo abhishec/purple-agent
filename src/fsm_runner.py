@@ -14,8 +14,10 @@ Key upgrades over Wave 2:
 - HITL guard now wired at APPROVAL_GATE (mutate tools blocked by hitl_guard.py)
 - Multi-checkpoint: processes that need sequential human confirmation use
   APPROVAL_GATE → MUTATE → APPROVAL_GATE (loop via fsm.reopen_approval_gate())
+- Read-only shortcircuit: pure query tasks skip to 3-state path (DECOMPOSE→ASSESS→COMPLETE)
 """
 from __future__ import annotations
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -33,6 +35,38 @@ class FSMState(str, Enum):
     ESCALATE        = "ESCALATE"
     FAILED          = "FAILED"
 
+
+# ── Read-only shortcircuit patterns ───────────────────────────────────────────
+
+_READONLY_PATTERNS = re.compile(
+    r'\b(what is|what are|show me|get me|find|list|status of|how many|'
+    r'who is|when was|where is|tell me|display|check|look up|retrieve|'
+    r'can you show|give me|what\'s the|whats the)\b',
+    re.IGNORECASE,
+)
+
+_ACTION_PATTERNS = re.compile(
+    r'\b(approve|reject|create|update|delete|cancel|submit|send|notify|'
+    r'process|execute|run|trigger|schedule|assign|escalate|close|open|'
+    r'migrate|offboard|reconcile|pay|disburse|remediate)\b',
+    re.IGNORECASE,
+)
+
+
+def detect_task_complexity(task_text: str) -> str:
+    """Return 'readonly' for pure query tasks, 'full' for tasks with actions.
+
+    Read-only tasks get a 3-state path (DECOMPOSE → ASSESS → COMPLETE) instead
+    of the full 8-state path, saving latency and tool budget.
+    """
+    has_action = bool(_ACTION_PATTERNS.search(task_text))
+    has_readonly = bool(_READONLY_PATTERNS.search(task_text))
+    if has_readonly and not has_action:
+        return "readonly"
+    return "full"
+
+
+# ── Process templates ─────────────────────────────────────────────────────────
 
 # Process type → ordered FSM states
 # Mirrors BrainOS process-registry.ts 16 built-in types
@@ -104,7 +138,7 @@ PROCESS_TEMPLATES: dict[str, list[FSMState]] = {
     ],
     "general": [
         FSMState.DECOMPOSE, FSMState.ASSESS,
-        FSMState.MUTATE, FSMState.COMPLETE,
+        FSMState.POLICY_CHECK, FSMState.MUTATE, FSMState.COMPLETE,
     ],
 }
 
@@ -168,6 +202,7 @@ class FSMRunner:
     - MUTATE state: all state changes happen here (hitl_guard wired at APPROVAL_GATE)
     - Multi-checkpoint: reopen_approval_gate() for sequential confirms
     - Per-phase prompt injection with phase-appropriate instructions
+    - Read-only shortcircuit: detect_task_complexity() collapses path to 3 states
     """
 
     def __init__(
@@ -190,6 +225,10 @@ class FSMRunner:
             self.ctx.current_state = (
                 self.states[self._idx] if self._idx < len(self.states) else FSMState.COMPLETE
             )
+        else:
+            # Read-only shortcircuit: collapse to 3-state path for pure queries
+            if detect_task_complexity(task_text) == "readonly":
+                self.states = [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPLETE]
 
     @property
     def current_state(self) -> FSMState:
@@ -248,7 +287,11 @@ class FSMRunner:
     def build_phase_prompt(self) -> str:
         state = self.ctx.current_state
         process = self.ctx.process_type.replace("_", " ").title()
-        history_str = " → ".join(self.ctx.state_history + [state.value])
+
+        # Cap history display to last 3 completed states + current — avoids prompt bloat
+        recent_history = (self.ctx.state_history + [state.value])[-4:]
+        prefix = "...→ " if len(self.ctx.state_history) > 3 else ""
+        history_str = prefix + " → ".join(recent_history)
 
         lines = [
             f"## Business Process: {process}",

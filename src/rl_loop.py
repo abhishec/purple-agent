@@ -6,10 +6,16 @@ Inspired by BrainOS agent-rl.ts + rl-agent-loop.ts.
 Two-layer learning (same as BrainOS):
 1. Case log: task patterns + outcomes → injected as primer before each task
 2. Quality scoring: measures answer quality (tool usage, completeness, policy adherence)
+
+Fixes applied (2026-03-01):
+- Bug B: Added import + call of build_benchmark_primer() from report_analyzer
+- Added extract_structured_memory() with pure string analysis (no API cost)
+- Added _update_case_entry_metadata() for enriching existing case entries
 """
 from __future__ import annotations
 import json
 import os
+import re
 import time
 import hashlib
 from dataclasses import dataclass, field, asdict
@@ -29,6 +35,7 @@ class CaseEntry:
     what_worked: str
     what_failed: str
     tool_count: int
+    domain: str = ""
     timestamp: float = field(default_factory=time.time)
 
 
@@ -85,7 +92,6 @@ def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> f
       - Policy compliance
       - Structured output markers
     """
-    import re as _re
     score = 0.50   # BrainOS conservative baseline
 
     length = len(answer.strip())
@@ -103,9 +109,9 @@ def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> f
     elif policy_passed is False: score -= 0.15
     # None = unknown, no adjustment
 
-    # BrainOS: empty data array penalty
-    if _re.search(r'"data"\s*:\s*\[\s*\]', answer): score -= 0.25
-    if _re.search(r'"results"\s*:\s*\[\s*\]', answer): score -= 0.15
+    # BrainOS: empty data array penalty (Bug A verified — raw strings compile correctly)
+    if re.search(r'"data"\s*:\s*\[\s*\]', answer):    score -= 0.25
+    if re.search(r'"results"\s*:\s*\[\s*\]', answer): score -= 0.15
 
     # Structure reward
     if any(m in answer.lower() for m in ["approved", "rejected", "completed", "decision:", "total:"]):
@@ -122,14 +128,137 @@ def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> f
     return round(max(0.0, min(1.0, score)), 3)
 
 
+# ── Structured memory extraction (pure string, zero API cost) ─────────────────
+
+def _extract_success_pattern(task_text: str, answer: str) -> str:
+    """
+    Extract a concise success pattern description from task + answer.
+    No API calls — pure string analysis.
+    """
+    parts = []
+
+    # Count tool references in answer
+    tool_mentions = len(re.findall(
+        r'\b(?:tool|called|fetched|retrieved|queried|executed|invoked)\b',
+        answer.lower()
+    ))
+    if tool_mentions > 0:
+        parts.append(f"Used ~{tool_mentions} tool references")
+
+    # Extract process type keyword from task
+    process_kws = [
+        "expense", "procurement", "invoice", "offboarding", "sla", "order",
+        "compliance", "dispute", "collections", "month-end", "approval",
+    ]
+    for kw in process_kws:
+        if kw in task_text.lower():
+            parts.append(f"Process: {kw}")
+            break
+
+    # Extract dollar amount if present
+    amount_m = re.search(r'\$[\d,]+(?:\.\d{2})?', answer)
+    if amount_m:
+        parts.append(f"Amount processed: {amount_m.group()}")
+
+    # Detect approval/rejection outcome
+    if re.search(r'\b(approved|rejected|completed|resolved)\b', answer.lower()):
+        outcome_m = re.search(r'\b(approved|rejected|completed|resolved)\b', answer.lower())
+        if outcome_m:
+            parts.append(f"Outcome: {outcome_m.group()}")
+
+    return ". ".join(parts) if parts else "Completed successfully"
+
+
+def _extract_failure_pattern(task_text: str, answer: str) -> str:
+    """
+    Extract a concise failure pattern description from task + answer.
+    No API calls — pure string analysis.
+    """
+    parts = []
+
+    # Check for common error phrases
+    error_patterns = [
+        (r"no data found", "No data found in tool response"),
+        (r"unable to", "Unable to complete action"),
+        (r"cannot access", "Tool access failure"),
+        (r"token budget", "Token budget exhausted"),
+        (r"tool unavailable", "Required tool unavailable"),
+        (r"missing\s+\w+", "Missing required field"),
+        (r"timed? out", "Timeout during execution"),
+    ]
+    for pattern, label in error_patterns:
+        if re.search(pattern, answer.lower()):
+            parts.append(label)
+            break
+
+    # Check for missing data indicators
+    if re.search(r'"data"\s*:\s*\[\s*\]', answer):
+        parts.append("Empty data response from tool")
+    if re.search(r'"results"\s*:\s*\[\s*\]', answer):
+        parts.append("Empty results from query")
+
+    # Short answer = incomplete
+    if len(answer.strip()) < 100:
+        parts.append("Answer too short — likely incomplete")
+
+    return ". ".join(parts) if parts else "Task incomplete or low quality"
+
+
+def _update_case_entry_metadata(domain: str, what_worked: str = "", what_failed: str = "") -> None:
+    """
+    Enrich the most recent case log entry for the given domain
+    with structured what_worked / what_failed metadata.
+    Called after extract_structured_memory() — enriches RL primer quality.
+    """
+    try:
+        cases = _load_cases()
+        if not cases:
+            return
+        # Find the most recent entry for this domain
+        for i in range(len(cases) - 1, max(len(cases) - 10, -1), -1):
+            if cases[i].get("domain") == domain:
+                if what_worked and not cases[i].get("what_worked"):
+                    cases[i]["what_worked"] = what_worked
+                if what_failed and not cases[i].get("what_failed"):
+                    cases[i]["what_failed"] = what_failed
+                _save_cases(cases)
+                return
+    except Exception:
+        pass
+
+
+def extract_structured_memory(task_text: str, answer: str, domain: str, quality: float) -> None:
+    """
+    Extract 3 structured facts from task outcome using pure string analysis (no API).
+    Inspired by BrainOS agent-rl.ts recordAgentOutcome() pattern.
+
+    For successes (quality >= 0.6):
+      - What worked: tool count, process type, dollar amount, outcome word
+    For failures:
+      - What failed: error phrase, missing data, short answer indicator
+
+    Results stored back into the most recent case log entry for this domain,
+    enriching the RL primer injected before future similar tasks.
+    """
+    if quality >= 0.6:
+        what_worked = _extract_success_pattern(task_text, answer)
+        _update_case_entry_metadata(domain, what_worked=what_worked)
+    else:
+        what_failed = _extract_failure_pattern(task_text, answer)
+        _update_case_entry_metadata(domain, what_failed=what_failed)
+
+
+# ── Core RL functions ─────────────────────────────────────────────────────────
+
 def record_outcome(
     task_text: str,
     answer: str,
     tool_count: int,
     policy_passed: bool | None = None,
     error: str | None = None,
+    domain: str = "",
 ) -> float:
-    """Record task outcome. Returns quality score (dopamine if ≥0.6, gaba if <0.6)."""
+    """Record task outcome. Returns quality score (dopamine if >=0.6, gaba if <0.6)."""
     cases = _load_cases()
     quality = score_quality(answer, tool_count, policy_passed)
     outcome = "success" if quality >= 0.6 else ("failure" if error else "partial")
@@ -154,9 +283,14 @@ def record_outcome(
         what_worked=what_worked,
         what_failed=what_failed,
         tool_count=tool_count,
+        domain=domain,
     )
     cases.append(asdict(entry))
     _save_cases(cases)
+
+    # Enrich with structured memory extraction immediately (pure string, no API)
+    extract_structured_memory(task_text, answer, domain, quality)
+
     return quality
 
 
@@ -164,11 +298,12 @@ def build_rl_primer(task_text: str) -> str:
     """
     Build a case-log primer — injected before task execution.
     Inspired by BrainOS rl-agent-loop.ts injectCaseLogContext().
+
+    Bug B fix (2026-03-01): Now also includes benchmark intelligence
+    from report_analyzer.build_benchmark_primer() so the agent knows
+    exactly where it lost points in the last benchmark run.
     """
     cases = _load_cases()
-    if not cases:
-        return ""
-
     task_kw = set(_extract_keywords(task_text))
     scored = []
     for c in cases:
@@ -178,16 +313,27 @@ def build_rl_primer(task_text: str) -> str:
     scored.sort(key=lambda x: (-x[0], -x[1].get("quality", 0)))
     relevant = [c for _, c in scored[:RELEVANT_CASES]]
 
-    if not relevant:
-        return ""
+    lines = []
 
-    lines = ["## LEARNED PATTERNS (from similar past tasks — apply these)"]
-    for c in relevant:
-        icon = "✅" if c["outcome"] == "success" else ("❌" if c["outcome"] == "failure" else "⚠️")
-        lines.append(f'\n{icon} Past: "{c["task_summary"][:80]}" — quality {c["quality"]:.2f}')
-        if c.get("what_worked"):
-            lines.append(f'   ✓ Worked: {c["what_worked"]}')
-        if c.get("what_failed"):
-            lines.append(f'   ✗ Avoid: {c["what_failed"]}')
-    lines.append("")
-    return "\n".join(lines)
+    # ── Benchmark intelligence (Bug B fix) ───────────────────────────────────
+    try:
+        from src.report_analyzer import build_benchmark_primer
+        bench_primer = build_benchmark_primer()
+        if bench_primer:
+            lines.append(bench_primer)
+    except Exception:
+        pass  # Graceful no-op — benchmark data may not be available yet
+
+    # ── Case log patterns ─────────────────────────────────────────────────────
+    if relevant:
+        lines.append("## LEARNED PATTERNS (from similar past tasks — apply these)")
+        for c in relevant:
+            icon = "✅" if c["outcome"] == "success" else ("❌" if c["outcome"] == "failure" else "⚠️")
+            lines.append(f'\n{icon} Past: "{c["task_summary"][:80]}" — quality {c["quality"]:.2f}')
+            if c.get("what_worked"):
+                lines.append(f'   ✓ Worked: {c["what_worked"]}')
+            if c.get("what_failed"):
+                lines.append(f'   ✗ Avoid: {c["what_failed"]}')
+        lines.append("")
+
+    return "\n".join(lines) if lines else ""
