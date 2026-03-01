@@ -50,7 +50,8 @@ from src.self_reflection import reflect_on_answer, build_improvement_prompt, sho
 from src.output_validator import validate_output, get_missing_fields_prompt              # Wave 9
 from src.self_moa import quick_synthesize as moa_quick                                   # Wave 10
 from src.five_phase_executor import five_phase_execute, should_use_five_phase            # Wave 10
-from src.finance_tools import FINANCE_TOOL_DEFINITIONS, call_finance_tool, is_finance_tool, build_finance_context  # Wave 10: integer-cent precision
+from src.finance_tools import FINANCE_TOOL_DEFINITIONS, call_finance_tool, is_finance_tool, build_finance_context  # Wave 10
+from src.context_rl import check_context_accuracy, record_context_outcome                    # Wave 12: RL drift detection
 
 
 def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
@@ -221,6 +222,7 @@ class MiniAIWorker:
             "system_context": system_context,
             "gate_fires": gate_fires,
             "rl_primer": rl_primer,
+            "finance_ctx": finance_ctx,   # Wave 12: stored for REFLECT accuracy check
         }
 
     # ── EXECUTE ───────────────────────────────────────────────────────────
@@ -432,6 +434,13 @@ class MiniAIWorker:
             error=error,
             domain=fsm.process_type,
         )
+
+        # Wave 12: context RL — check if pre-computed finance facts matched the answer
+        finance_ctx_for_check = context.get("finance_ctx", "")
+        if finance_ctx_for_check and answer and not error:
+            accuracy_results = check_context_accuracy(finance_ctx_for_check, answer, fsm.process_type)
+            for ctx_type, was_match in accuracy_results:
+                record_context_outcome(fsm.process_type, ctx_type, was_match)
 
         # Wave 8: extract knowledge + entities in background (fire-and-forget)
         asyncio.ensure_future(

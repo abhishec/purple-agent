@@ -1,27 +1,30 @@
 """
 finance_tools.py
-Financial computation support — two usage patterns:
+Financial computation support — FSM-managed dynamic approach.
 
-Pattern A — Synthetic tool (amortization only):
-  Loan amortization is the one calculation too complex for Claude to do natively
-  (360-period compounding, per-period integer rounding, payment schedule).
-  Exposed as finance_loan_amortization in FINANCE_TOOL_DEFINITIONS.
-  Intercepted in worker_brain._direct_call before MCP network round-trip.
+TWO PATTERNS (no static hardcoded tools except amortization):
 
-Pattern B — Context injection (all other financial calculations):
-  Variance checks, proration, SLA credits, depreciation, revenue recognition.
-  These are pre-computed in the PRIME phase using financial_calculator.py and
-  injected as ground-truth facts into the COMPUTE state prompt.
-  Zero query budget cost. ~30 tokens instead of 560.
-  FSM COMPUTE state semantics preserved ("DO NOT call any tools").
+Pattern A — Context injection (all calculations except amortization):
+  build_finance_context() is called in PRIME phase.
+  Checks context_rl confidence BEFORE injecting.
+  Injects decision chains, not just numbers: "variance = 2.04% → APPROVE"
+  When drift is detected: injects WARNING instead of value.
+  Zero query budget cost. ~30-50 tokens vs 560 for old 7-tool approach.
 
-Why this split:
-  amortization = 360 iterations, per-step rounding accumulates cent drift.
-  Claude cannot produce correct amortization tables natively.
-  Everything else = single-formula calculations Claude handles precisely.
+Pattern B — Synthetic tool (amortization only):
+  finance_loan_amortization: 360-period compounding Claude cannot do natively.
+  One legitimate exception to the dynamic-discovery rule.
+
+RL integration (via context_rl.py):
+  Every injection is confidence-gated:
+    ≥75% accurate → inject with "trust this" annotation
+    55–74%        → inject with "verify first" annotation
+    <55%          → inject drift WARNING (tells Claude rules may have changed)
+  This makes the computation layer adaptive: it learns within the benchmark run.
 """
 from __future__ import annotations
 
+import re as _re
 from src.financial_calculator import (
     apply_variance_check,
     prorated_amount,
@@ -30,12 +33,15 @@ from src.financial_calculator import (
     compute_sla_credit,
     amortize_loan,
     payment_plan_summary,
-    straight_line_depreciation,
-    recognize_revenue,
+)
+from src.context_rl import (
+    should_inject,
+    is_drift_detected,
+    get_drift_warning,
+    get_confidence_annotation,
 )
 
-# ── Synthetic tool definition — amortization only ─────────────────────────────
-# All other calculations are handled via build_finance_context() injection.
+# ── Synthetic tool (amortization only) ────────────────────────────────────────
 
 FINANCE_TOOL_DEFINITIONS = [
     {
@@ -43,14 +49,15 @@ FINANCE_TOOL_DEFINITIONS = [
         "description": (
             "Generate full loan amortization schedule with monthly payment breakdown. "
             "Returns summary (total interest, monthly payment) and first 3 payments. "
-            "Use for payroll loans, vendor financing, equipment leases."
+            "Use for payroll loans, vendor financing, equipment leases. "
+            "Local computation — integer-cent precision, zero network cost."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "principal": {"type": "number", "description": "Loan principal in dollars"},
-                "annual_rate_pct": {"type": "number", "description": "Annual interest rate %, e.g. 6.5"},
-                "months": {"type": "number", "description": "Loan term in months"},
+                "principal":        {"type": "number", "description": "Loan principal in dollars"},
+                "annual_rate_pct":  {"type": "number", "description": "Annual interest rate %, e.g. 6.5"},
+                "months":           {"type": "number", "description": "Loan term in months"},
             },
             "required": ["principal", "annual_rate_pct", "months"],
         },
@@ -59,7 +66,7 @@ FINANCE_TOOL_DEFINITIONS = [
 
 
 def call_finance_tool(tool_name: str, params: dict) -> dict:
-    """Route finance_* synthetic tool calls to local Python calculation."""
+    """Route finance_* synthetic tool calls to local Python (zero API cost)."""
     try:
         if tool_name == "finance_loan_amortization":
             schedule = amortize_loan(
@@ -86,118 +93,191 @@ def is_finance_tool(tool_name: str) -> bool:
     return tool_name.startswith("finance_")
 
 
-# ── Context injection — pre-compute financial facts for COMPUTE state ─────────
+# ── Patterns ────────────────────────────────────────────────────────────────────
 
-import re as _re
-
-# Patterns that signal a financial computation task
 _DOLLAR_PAT = _re.compile(r"\$\s?([\d,]+(?:\.\d{1,2})?)", _re.IGNORECASE)
-_PCT_PAT = _re.compile(r"(\d+(?:\.\d+)?)\s*%")
-_DAYS_PAT = _re.compile(r"(\d+)\s*days?", _re.IGNORECASE)
-_MONTHS_PAT = _re.compile(r"(\d+)\s*months?", _re.IGNORECASE)
+_PCT_PAT    = _re.compile(r"(\d+(?:\.\d+)?)\s*%")
 
+# Labeled extraction patterns (more reliable than positional)
+_LABEL_INVOICE = _re.compile(
+    r"(?:invoice[d]?|billed|charged|amount due)[^\d$]*\$\s?([\d,]+(?:\.\d{1,2})?)",
+    _re.IGNORECASE,
+)
+_LABEL_PO = _re.compile(
+    r"(?:po|purchase order|approved|contracted|budgeted)[^\d$]*\$\s?([\d,]+(?:\.\d{1,2})?)",
+    _re.IGNORECASE,
+)
+_LABEL_THRESHOLD = _re.compile(
+    r"(?:threshold|limit|tolerance|variance)[^\d%]*(\d+(?:\.\d+)?)\s*%",
+    _re.IGNORECASE,
+)
+
+
+# ── Context injection — RL-gated ───────────────────────────────────────────────
 
 def build_finance_context(task_text: str, process_type: str) -> str:
     """
-    Pre-compute financial facts and return a concise context block for injection
-    into the COMPUTE state system prompt.
+    Pre-compute financial facts for COMPUTE state injection.
 
-    Called during PRIME phase. Returns empty string if no financial signals found.
-    Zero API cost. ~20-50 tokens when it fires.
+    RL-gated: checks context_rl confidence before each injection.
+    Returns drift warnings when confidence drops below threshold.
+    Adds decision chains: not just the number, but the recommended action.
+
+    Zero API cost. ~30-50 tokens on hit.
     """
     lines: list[str] = []
-    text = task_text.lower()
 
-    # ── Variance check (invoice_reconciliation, procurement) ──────────────────
+    # ── Variance (invoice_reconciliation, procurement, expense_approval) ──────
     if process_type in ("invoice_reconciliation", "procurement", "expense_approval"):
-        amounts = _extract_dollars(task_text)
-        pcts = _extract_pcts(task_text)
-        if len(amounts) >= 2 and pcts:
-            # Assume first two amounts are invoiced vs. PO (order in text)
-            invoiced, po = amounts[0], amounts[1]
-            threshold = pcts[0]
-            try:
-                result = apply_variance_check(invoiced, po, threshold)
-                sign = "EXCEEDS" if result["exceeds"] else "does NOT exceed"
-                lines.append(
-                    f"Pre-computed variance: ${invoiced:,.2f} vs ${po:,.2f} = "
-                    f"{result['pct']:.4f}% variance — {sign} {threshold}% threshold. "
-                    f"Requires escalation: {result['exceeds']}."
-                )
-            except Exception:
-                pass
+        drift = is_drift_detected(process_type, "variance")
+        if drift:
+            lines.append(get_drift_warning("variance"))
+        elif should_inject(process_type, "variance"):
+            result = _compute_variance(task_text)
+            if result:
+                conf_note = get_confidence_annotation(process_type, "variance")
+                lines.append(result + conf_note)
 
     # ── SLA credit (sla_breach) ───────────────────────────────────────────────
-    # compute_sla_credit(downtime_mins, sla_max_mins, invoice_amount, credit_pct_per_breach, cap_pct)
     if process_type == "sla_breach":
-        amounts = _extract_dollars(task_text)
-        pcts = _extract_pcts(task_text)
-        downtime_m = _re.search(r"(\d+)\s*(?:minute|min)", task_text, _re.IGNORECASE)
-        downtime_h = _re.search(r"(\d+(?:\.\d+)?)\s*(?:hour|hr)", task_text, _re.IGNORECASE)
-        if amounts and (downtime_m or downtime_h):
-            downtime_min = (
-                float(downtime_m.group(1)) if downtime_m
-                else float(downtime_h.group(1)) * 60
-            )
-            contract_val = amounts[0]
-            sla_tgt = next((p for p in pcts if p > 90), 99.9)
-            credit_pct = next((p for p in pcts if p < 50), 10.0)
-            cap = next((p for p in pcts if 20 <= p <= 50), 30.0)
-            # sla_max_mins = allowed downtime for 30-day month at target SLA
-            sla_max_mins = 30 * 24 * 60 * (1.0 - sla_tgt / 100.0)
-            try:
-                credit = compute_sla_credit(downtime_min, sla_max_mins, contract_val, credit_pct, cap)
-                lines.append(
-                    f"Pre-computed SLA credit: ${credit:,.2f} for {downtime_min:.0f} min downtime "
-                    f"vs {sla_max_mins:.1f} min allowed (SLA {sla_tgt}% on ${contract_val:,.2f} contract)."
-                )
-            except Exception:
-                pass
+        drift = is_drift_detected(process_type, "sla_credit")
+        if drift:
+            lines.append(get_drift_warning("sla_credit"))
+        elif should_inject(process_type, "sla_credit"):
+            result = _compute_sla(task_text)
+            if result:
+                conf_note = get_confidence_annotation(process_type, "sla_credit")
+                lines.append(result + conf_note)
 
-    # ── Proration (subscription_migration, month_end_close) ──────────────────
-    if process_type in ("subscription_migration", "month_end_close", "ar_collections"):
-        amounts = _extract_dollars(task_text)
-        days = _re.findall(r"(\d+)\s*(?:day|days)", task_text, _re.IGNORECASE)
-        months = _re.findall(r"(\d+)\s*(?:month|months)", task_text, _re.IGNORECASE)
-        if amounts and days and len(days) >= 2:
-            try:
-                total_days = int(days[1])
-                used_days = int(days[0])
-                remaining = prorated_amount(amounts[0], used_days, total_days)
-                lines.append(
-                    f"Pre-computed proration: ${amounts[0]:,.2f} for {used_days}/{total_days} days "
-                    f"= ${remaining:,.2f} remaining value."
-                )
-            except Exception:
-                pass
-        elif amounts and months and len(months) >= 2:
-            try:
-                total_mo = int(months[1]) * 30
-                used_mo = int(months[0]) * 30
-                remaining = prorated_amount(amounts[0], used_mo, total_mo)
-                lines.append(
-                    f"Pre-computed proration: ${amounts[0]:,.2f} for {months[0]}/{months[1]} months "
-                    f"= ${remaining:,.2f} remaining value."
-                )
-            except Exception:
-                pass
+    # ── Proration (subscription_migration, ar_collections, month_end_close) ───
+    if process_type in ("subscription_migration", "ar_collections", "month_end_close"):
+        drift = is_drift_detected(process_type, "proration")
+        if drift:
+            lines.append(get_drift_warning("proration"))
+        elif should_inject(process_type, "proration"):
+            result = _compute_proration(task_text)
+            if result:
+                conf_note = get_confidence_annotation(process_type, "proration")
+                lines.append(result + conf_note)
 
     if not lines:
         return ""
+
     return (
-        "## Pre-Computed Financial Facts\n"
-        "The following values were computed with integer-cent precision. "
-        "Use them as ground truth in your COMPUTE reasoning — do not recalculate.\n"
+        "## Pre-Computed Financial Facts (integer-cent precision)\n"
+        "Use as ground truth in COMPUTE reasoning. "
+        "⚠ warnings below mean standard formulas may not apply — retrieve fresh data.\n"
         + "\n".join(f"- {ln}" for ln in lines)
     )
 
 
+# ── Computation helpers ─────────────────────────────────────────────────────────
+
+def _compute_variance(task_text: str) -> str | None:
+    """Extract amounts + threshold and compute variance with decision chain."""
+    try:
+        # Try labeled extraction first (more reliable)
+        inv_m = _LABEL_INVOICE.search(task_text)
+        po_m  = _LABEL_PO.search(task_text)
+        thr_m = _LABEL_THRESHOLD.search(task_text)
+
+        if inv_m and po_m:
+            invoiced  = float(inv_m.group(1).replace(",", ""))
+            po        = float(po_m.group(1).replace(",", ""))
+        else:
+            # Fallback: positional (largest two dollar amounts)
+            amounts = _extract_dollars(task_text)
+            if len(amounts) < 2:
+                return None
+            invoiced, po = amounts[0], amounts[1]
+
+        threshold = float(thr_m.group(1)) if thr_m else next(
+            (p for p in _extract_pcts(task_text) if p < 20), 5.0
+        )
+
+        result = apply_variance_check(invoiced, po, threshold)
+        action = "ESCALATE for approval" if result["exceeds"] else "APPROVE"
+        return (
+            f"Variance: ${invoiced:,.2f} vs ${po:,.2f} PO = {result['pct']:.4f}% "
+            f"({'exceeds' if result['exceeds'] else 'within'} {threshold}% threshold) "
+            f"→ Recommended action: {action}. "
+            f"Variance amount: ${result['variance']:,.2f}."
+        )
+    except Exception:
+        return None
+
+
+def _compute_sla(task_text: str) -> str | None:
+    """Compute SLA credit with correct sla_max_mins formula."""
+    try:
+        amounts = _extract_dollars(task_text)
+        pcts    = _extract_pcts(task_text)
+        down_m  = _re.search(r"(\d+)\s*(?:minute|min)", task_text, _re.IGNORECASE)
+        down_h  = _re.search(r"(\d+(?:\.\d+)?)\s*(?:hour|hr)", task_text, _re.IGNORECASE)
+
+        if not amounts or not (down_m or down_h):
+            return None
+
+        downtime_min = (
+            float(down_m.group(1)) if down_m else float(down_h.group(1)) * 60
+        )
+        contract_val = amounts[0]
+        sla_tgt      = next((p for p in pcts if p > 90), 99.9)
+        credit_pct   = next((p for p in pcts if 1 <= p < 50), 10.0)
+        cap          = next((p for p in pcts if 20 <= p <= 50), 30.0)
+
+        # sla_max_mins = allowed downtime per 30-day month at target SLA
+        sla_max_mins = 30 * 24 * 60 * (1.0 - sla_tgt / 100.0)
+        credit = compute_sla_credit(downtime_min, sla_max_mins, contract_val, credit_pct, cap)
+
+        breach = downtime_min > sla_max_mins
+        return (
+            f"SLA credit: {downtime_min:.0f} min downtime vs {sla_max_mins:.1f} min allowed "
+            f"(SLA {sla_tgt}%) → {'BREACH' if breach else 'within SLA'}. "
+            f"Credit: ${credit:,.2f} (cap {cap:.0f}% of ${contract_val:,.2f} contract)."
+        )
+    except Exception:
+        return None
+
+
+def _compute_proration(task_text: str) -> str | None:
+    """Compute prorated remaining value from partial period usage."""
+    try:
+        amounts = _extract_dollars(task_text)
+        months  = [int(m) for m in _re.findall(r"(\d+)\s*months?", task_text, _re.IGNORECASE)]
+        days    = [int(d) for d in _re.findall(r"(\d+)\s*days?",   task_text, _re.IGNORECASE)]
+
+        if not amounts:
+            return None
+
+        total_val = amounts[0]
+
+        if months and len(months) >= 2:
+            used_mo, total_mo = min(months), max(months)
+            remaining = prorated_amount(total_val, used_mo * 30, total_mo * 30)
+            return (
+                f"Proration: ${total_val:,.2f} for {used_mo}/{total_mo} months "
+                f"= ${remaining:,.2f} remaining (${total_val - remaining:,.2f} consumed)."
+            )
+        elif days and len(days) >= 2:
+            used_d, total_d = min(days), max(days)
+            remaining = prorated_amount(total_val, used_d, total_d)
+            return (
+                f"Proration: ${total_val:,.2f} for {used_d}/{total_d} days "
+                f"= ${remaining:,.2f} remaining."
+            )
+        return None
+    except Exception:
+        return None
+
+
 def _extract_dollars(text: str) -> list[float]:
-    """Extract dollar amounts from text, return as floats sorted largest-first."""
-    matches = _DOLLAR_PAT.findall(text)
-    return sorted([float(m.replace(",", "")) for m in matches], reverse=True)
+    """Extract dollar amounts, largest first."""
+    return sorted(
+        [float(m.replace(",", "")) for m in _DOLLAR_PAT.findall(text)],
+        reverse=True,
+    )
 
 
 def _extract_pcts(text: str) -> list[float]:
-    """Extract percentage values from text."""
     return [float(m) for m in _PCT_PAT.findall(text)]

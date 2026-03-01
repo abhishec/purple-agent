@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from src.worker_brain import run_worker   # MiniAIWorker replaces executor directly
 from src.training_loader import seed_from_training_data, is_stale
+from src.context_rl import get_context_stats
 from src.report_analyzer import analyze_and_save, load_intelligence
 
 app = FastAPI(title="BrainOS Purple Agent", version="2.0.0")
@@ -199,6 +200,13 @@ async def rl_status():
     except Exception:
         pass
 
+    # Context injection quality stats (Wave 12)
+    ctx_stats: dict = {}
+    try:
+        ctx_stats = get_context_stats()
+    except Exception:
+        pass
+
     return {
         # Top-level aliases for smoke test / legacy clients
         "status": "ok",
@@ -208,6 +216,7 @@ async def rl_status():
         "case_log": case_stats,
         "knowledge_base": kb_stats,
         "entity_memory": entity_stats,
+        "context_rl": ctx_stats,  # per-process confidence + drift alerts
     }
 
 
