@@ -177,6 +177,22 @@ def detect_process_type(task_text: str) -> str:
     return best_type
 
 
+def _states_from_definition(definition: dict) -> list[FSMState]:
+    """Convert a synthesized definition's state names to FSMState enums."""
+    result = []
+    for name in definition.get("states", []):
+        try:
+            result.append(FSMState(name))
+        except ValueError:
+            pass  # ignore unrecognized state names
+    # Guarantee DECOMPOSE→...→COMPLETE bookends
+    if not result or result[0] != FSMState.DECOMPOSE:
+        result.insert(0, FSMState.DECOMPOSE)
+    if not result or result[-1] != FSMState.COMPLETE:
+        result.append(FSMState.COMPLETE)
+    return result
+
+
 @dataclass
 class FSMContext:
     task_text: str
@@ -211,21 +227,41 @@ class FSMRunner:
         session_id: str,
         process_type: str | None = None,
         checkpoint=None,
+        definition: dict | None = None,  # Wave 13: synthesized FSM definition for novel types
     ):
         ptype = process_type or detect_process_type(task_text)
         self.ctx = FSMContext(task_text=task_text, session_id=session_id, process_type=ptype)
-        self.states = PROCESS_TEMPLATES.get(ptype, PROCESS_TEMPLATES["general"])
+        self._definition: dict | None = definition
         self._idx = 0
 
         if checkpoint:
-            self.ctx.process_type = checkpoint.process_type
-            self.states = PROCESS_TEMPLATES.get(checkpoint.process_type, PROCESS_TEMPLATES["general"])
+            ptype_c = checkpoint.process_type
+            self.ctx.process_type = ptype_c
+
+            # Wave 13: on checkpoint restore, look up synthesized definition from cache
+            # if this was a novel type (not in PROCESS_TEMPLATES)
+            if definition is None and ptype_c not in PROCESS_TEMPLATES:
+                try:
+                    from src.dynamic_fsm import get_synthesized
+                    self._definition = get_synthesized(ptype_c)
+                except Exception:
+                    pass
+
+            if self._definition:
+                self.states = _states_from_definition(self._definition)
+            else:
+                self.states = PROCESS_TEMPLATES.get(ptype_c, PROCESS_TEMPLATES["general"])
+
             self._idx = checkpoint.state_idx
             self.ctx.state_history = list(checkpoint.state_history)
             self.ctx.current_state = (
                 self.states[self._idx] if self._idx < len(self.states) else FSMState.COMPLETE
             )
         else:
+            if self._definition:
+                self.states = _states_from_definition(self._definition)
+            else:
+                self.states = PROCESS_TEMPLATES.get(ptype, PROCESS_TEMPLATES["general"])
             # Read-only shortcircuit: collapse to 3-state path for pure queries
             if detect_task_complexity(task_text) == "readonly":
                 self.states = [FSMState.DECOMPOSE, FSMState.ASSESS, FSMState.COMPLETE]
@@ -352,7 +388,17 @@ class FSMRunner:
             ),
         }
 
-        lines.append(instructions.get(state, "Execute the current phase."))
+        # Wave 13: synthesized definition instructions take priority (process-specific)
+        # Fall back to hardcoded instructions for known built-in process types
+        synth_instruction = None
+        if self._definition:
+            synth_instruction = self._definition.get("state_instructions", {}).get(state.value)
+
+        lines.append(synth_instruction or instructions.get(state, "Execute the current phase."))
+
+        # Surface synthesis indicator for transparency
+        if self._definition and self._definition.get("_synthesized"):
+            lines.append(f"\n[Dynamic FSM: synthesized for '{self.ctx.process_type}']")
 
         if self.ctx.approval_count > 0:
             lines.append(f"\n[Multi-checkpoint: approval gate #{self.ctx.approval_count + 1}]")

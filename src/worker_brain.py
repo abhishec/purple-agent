@@ -52,6 +52,7 @@ from src.self_moa import quick_synthesize as moa_quick                          
 from src.five_phase_executor import five_phase_execute, should_use_five_phase            # Wave 10
 from src.finance_tools import FINANCE_TOOL_DEFINITIONS, call_finance_tool, is_finance_tool, build_finance_context  # Wave 10
 from src.context_rl import check_context_accuracy, record_context_outcome                    # Wave 12: RL drift detection
+from src.dynamic_fsm import synthesize_if_needed, is_known_type                              # Wave 13: dynamic FSM for novel process types
 
 
 def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
@@ -142,11 +143,23 @@ class MiniAIWorker:
             process_type, _cls_conf = await classify_process_type(task_text)
         else:
             process_type = None   # checkpoint already has process_type
+
+        # Wave 13: dynamic FSM synthesis for novel process types
+        # If the classified type has no built-in definition, synthesize one via Haiku.
+        # One synthesis per new process type — all subsequent tasks get cached definition.
+        synth_definition = None
+        if not checkpoint and process_type and not is_known_type(process_type):
+            try:
+                synth_definition = await synthesize_if_needed(process_type, task_text)
+            except Exception:
+                pass  # never block execution — fall back to general template
+
         fsm = FSMRunner(
             task_text=task_text,
             session_id=self.session_id,
             process_type=process_type,
             checkpoint=checkpoint,
+            definition=synth_definition,  # Wave 13: synthesized or None
         )
         phase_prompt = fsm.build_phase_prompt()
         self.budget.consume(phase_prompt, "fsm_phase")
