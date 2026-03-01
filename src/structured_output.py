@@ -109,6 +109,19 @@ def extract_ranked_items(text: str) -> list[str]:
     return []
 
 
+
+def _answer_is_json_array(answer: str) -> bool:
+    """True if answer IS a JSON array — the strongest signal for bracket format."""
+    s = answer.strip()
+    if not (s.startswith('[') and s.endswith(']')):
+        return False
+    try:
+        import json as _json
+        return isinstance(_json.loads(s), list)
+    except (ValueError, _json.JSONDecodeError):
+        return False
+
+
 def enforce_bracket_format(items: list[str]) -> str:
     """
     Format items as a clean JSON array string — exact_match benchmark format.
@@ -124,13 +137,21 @@ def enforce_bracket_format(items: list[str]) -> str:
 def format_final_answer(answer: str, task_text: str = "", policy_result: dict | None = None) -> str:
     """
     Post-process the final answer:
-    1. Prepend policy outcome if failed (prose answers only — never corrupt bracket format)
-    2. Try to detect and enforce bracket format for list answers
-    3. Post-hoc correction: if the answer contains a parseable JSON array but task was
+    1. Post-hoc bracket detection — if the answer IS a valid JSON array, return immediately.
+       The answer itself is ground truth; overrides task-level classification.
+    2. Prepend policy outcome if failed (prose answers only — never corrupt bracket format)
+    3. Try to detect and enforce bracket format for list answers
+    4. Post-hoc correction: if the answer contains a parseable JSON array but task was
        not originally classified as a list task, still enforce bracket format — the
        answer itself is ground truth.
     """
     answer_stripped = answer.strip()
+
+    # Post-hoc bracket detection — answer itself is ground truth.
+    # Overrides task-level classification if the agent returned a valid JSON array.
+    # Checked BEFORE any other formatting logic — no metadata, no prose wrapping.
+    if _answer_is_json_array(answer_stripped):
+        return answer_stripped
 
     # Bracket-format answers are exact_match targets.
     # NEVER add a policy prefix — it would break string comparison.

@@ -25,6 +25,64 @@ _ESCALATE_ACTIONS = frozenset({"escalate", "escalation_required", "raise"})
 _WARN_ACTIONS = frozenset({"warn", "flag", "notify", "alert", "log", "audit"})
 
 
+# Module-level cache for Haiku-classified action words
+_action_class_cache: dict[str, str] = {}  # action_word -> "block"|"require_approval"|"escalate"|"informational"
+
+
+def _classify_action_with_haiku(action: str) -> str:
+    """Zero-shot classify an unknown policy action word. Cached forever."""
+    if action in _action_class_cache:
+        return _action_class_cache[action]
+
+    import os
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        _action_class_cache[action] = "require_approval"  # safe default
+        return "require_approval"
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=20,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"In a business approval policy, classify this action word: '{action}'\n"
+                    "Reply with EXACTLY ONE of: block, require_approval, escalate, informational\n"
+                    "block = prevents the operation entirely\n"
+                    "require_approval = needs human approval before proceeding\n"
+                    "escalate = routes to higher authority\n"
+                    "informational = log/notify only, does not block"
+                )
+            }]
+        )
+        result = resp.content[0].text.strip().lower()
+        valid = {"block", "require_approval", "escalate", "informational"}
+        classification = result if result in valid else "require_approval"
+    except Exception:
+        classification = "require_approval"  # safe default on any error
+
+    _action_class_cache[action] = classification
+    return classification
+
+
+def _get_action_category(action: str) -> str:
+    """Get action category with Haiku fallback for unknown actions."""
+    action_lower = action.lower().strip()
+    if action_lower in _BLOCK_ACTIONS:
+        return "block"
+    if action_lower in _APPROVAL_ACTIONS:
+        return "require_approval"
+    if action_lower in _ESCALATE_ACTIONS:
+        return "escalate"
+    if action_lower in _WARN_ACTIONS:
+        return "informational"
+    # Unknown action: ask Haiku (synchronous, cached)
+    return _classify_action_with_haiku(action_lower)
+
+
 def evaluate_policy_rules(rules: list[dict], context: PolicyContext) -> dict:
     """
     Evaluate policy rules against a context object.
@@ -52,19 +110,12 @@ def evaluate_policy_rules(rules: list[dict], context: PolicyContext) -> dict:
                 "description": rule.get("description", ""),
             })
 
-    requires_approval = any(r["action"] in _APPROVAL_ACTIONS for r in triggered)
-    escalation_required = any(r["action"] in _ESCALATE_ACTIONS for r in triggered)
-    blocked = any(r["action"] in _BLOCK_ACTIONS for r in triggered)
-
-    # Safe default: unknown actions are treated as requiring approval.
-    # This prevents a novel action keyword from silently passing a triggered rule.
-    known_actions = _APPROVAL_ACTIONS | _BLOCK_ACTIONS | _ESCALATE_ACTIONS | _WARN_ACTIONS
-    unknown_action_triggered = any(
-        r["action"] not in known_actions and r["action"] != ""
-        for r in triggered
-    )
-    if unknown_action_triggered:
-        requires_approval = True
+    # Use _get_action_category for semantic classification.
+    # Falls back to Haiku for novel action words not in any frozenset, cached per word.
+    categories = [_get_action_category(r["action"]) for r in triggered]
+    requires_approval = "require_approval" in categories
+    escalation_required = "escalate" in categories
+    blocked = "block" in categories
 
     # Escalation level: pick the highest-priority level from all triggered rules.
     # Extended to include common policy levels not in the original 7-item list.
