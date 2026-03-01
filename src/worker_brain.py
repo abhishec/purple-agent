@@ -38,10 +38,10 @@ from src.fsm_runner import FSMRunner
 from src.privacy_guard import check_privacy
 from src.token_budget import TokenBudget, format_competition_answer, MODELS
 from src.schema_adapter import resilient_tool_call
-from src.hitl_guard import check_approval_gate          # Gap 1
+from src.hitl_guard import check_approval_gate, seed_tool_type_cache  # Gap 1
 from src.paginated_tools import paginated_fetch          # Gap 2
 from src.document_generator import build_approval_brief  # Gap 3
-from src.config import GREEN_AGENT_MCP_URL
+from src.config import GREEN_AGENT_MCP_URL, ANTHROPIC_API_KEY as _ANTHROPIC_API_KEY
 from src.smart_classifier import classify_process_type   # LLM routing
 from src.knowledge_extractor import get_relevant_knowledge, extract_and_store
 from src.entity_extractor import get_entity_context, record_task_entities
@@ -58,7 +58,7 @@ from src.dynamic_tools import (                                                 
     detect_tool_gaps, synthesize_and_register,
     detect_tool_gaps_llm,                                                                     # LLM-based phase-2 gap detection
 )
-from src.mutation_verifier import MutationVerifier                                            # write-track + WAL flush + LLM judge log
+from src.mutation_verifier import MutationVerifier, _is_write_tool                           # write-track + WAL flush + LLM judge log
 from src.strategy_bandit import select_strategy, record_outcome as bandit_record               # UCB1 strategy bandit
 from src.compute_verifier import verify_compute_output                                         # COMPUTE math reflection gate
 from src.context_pruner import prune_case_log, prune_rl_primer                                 # context rot pruning
@@ -97,6 +97,7 @@ class MiniAIWorker:
         self._tools: list[dict] = []
         self._ep: str = ""
         self._api_calls: int = 0   # total LLM API calls this task (cost guard)
+        self._write_read_map: dict[str, str] = {}  # populated by _discover_write_read_pairs in PRIME
 
     # ── PARAMETER NORMALIZATION ───────────────────────────────────────────
 
@@ -199,6 +200,77 @@ class MiniAIWorker:
             task_text, answer, tool_count, error, context, task_id, start_ms
         )
 
+    async def _discover_write_read_pairs(
+        self, write_tools: list[str], all_tool_names: list[str]
+    ) -> dict[str, str]:
+        """
+        For each write tool, find its read counterpart from the available tool list.
+        Uses cache-first: checks tool_registry.json, falls back to one Haiku call for unknowns.
+        Returns: {write_tool_name: read_tool_name}
+        """
+        import os
+
+        cache_key = "write_read_pairs"
+        registry_path = os.path.join(os.getenv("RL_CACHE_DIR", "/app"), "tool_registry.json")
+
+        # Load existing cache
+        cached_pairs: dict[str, str] = {}
+        registry: dict = {}
+        try:
+            with open(registry_path) as f:
+                registry = json.load(f)
+                cached_pairs = registry.get(cache_key, {})
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+        # Find write tools not yet in cache
+        uncached = [t for t in write_tools if t not in cached_pairs]
+
+        if uncached and _ANTHROPIC_API_KEY and all_tool_names:
+            read_tools = [t for t in all_tool_names if not _is_write_tool(t)]
+            prompt = (
+                "For each write tool below, identify which read tool from the available list "
+                "should be called immediately after to verify the mutation was applied.\n\n"
+                f"Available read tools: {read_tools}\n\n"
+                "Write tools to map:\n" +
+                "\n".join(f"- {t}" for t in uncached[:20]) +
+                "\n\nRespond ONLY as JSON: {\"write_tool\": \"read_tool\", ...}\n"
+                "If no read tool is appropriate, use null."
+            )
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=_ANTHROPIC_API_KEY)
+                resp = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: client.messages.create(
+                        model="claude-haiku-4-5",
+                        max_tokens=512,
+                        messages=[{"role": "user", "content": prompt}],
+                    ),
+                )
+                import re as _re
+                raw = resp.content[0].text.strip()
+                m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+                if m:
+                    new_pairs = json.loads(m.group())
+                    # Only keep pairs where the read tool actually exists
+                    tool_set = set(all_tool_names)
+                    new_pairs = {k: v for k, v in new_pairs.items()
+                                 if v and v in tool_set}
+                    cached_pairs.update(new_pairs)
+                    # Persist to registry
+                    try:
+                        registry[cache_key] = cached_pairs
+                        with open(registry_path, 'w') as f:
+                            json.dump(registry, f, indent=2)
+                    except Exception:
+                        pass
+            except Exception:
+                pass  # fire-and-forget — noun extraction fallback still works
+
+        return cached_pairs
+
+
     # ── PRIME ─────────────────────────────────────────────────────────────
 
     async def _prime(self, task_text: str, policy_doc: str, task_id: str) -> dict:
@@ -294,6 +366,26 @@ class MiniAIWorker:
                     self._tools.append(new_schema)
             except Exception:
                 pass  # never block execution for tool synthesis failures
+
+        # Haiku-assisted write→read discovery (cached after first call)
+        write_tools = [t.get("name", "") for t in self._tools if _is_write_tool(t.get("name", ""))]
+        all_tool_names = [t.get("name", "") for t in self._tools]
+        if write_tools:
+            self._write_read_map = await self._discover_write_read_pairs(write_tools, all_tool_names)
+        else:
+            self._write_read_map = {}
+
+        # Seed hitl_guard cache with any tool type overrides from registry
+        try:
+            import os as _os
+            _reg_path = _os.path.join(_os.getenv("RL_CACHE_DIR", "/app"), "tool_registry.json")
+            with open(_reg_path) as _f:
+                _reg = json.load(_f)
+            tool_type_overrides = _reg.get("tool_type_cache", {})
+            if tool_type_overrides:
+                seed_tool_type_cache(tool_type_overrides)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
 
         # Gap 1: HITL gate — check if we should block mutations at APPROVAL_GATE
         gate_fires, hitl_prompt = check_approval_gate(
@@ -394,7 +486,7 @@ class MiniAIWorker:
 
         # Wrap with MutationVerifier — tracks writes, does read-back to force
         # SQLite WAL checkpoint, builds mutation log for LLM judge scoring
-        verifier = MutationVerifier(on_tool_call_inner)
+        verifier = MutationVerifier(on_tool_call_inner, write_read_map=getattr(self, '_write_read_map', {}))
         on_tool_call = verifier.call
 
         async def _raw_call(tool_name: str, params: dict) -> dict:

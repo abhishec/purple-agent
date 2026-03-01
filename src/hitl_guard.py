@@ -86,6 +86,24 @@ def classify_tool(tool_name: str) -> str:
     return "mutate"
 
 
+
+# Module-level cache: tool_name -> 'read' | 'compute' | 'mutate'
+_tool_type_cache: dict[str, str] = {}
+
+
+def seed_tool_type_cache(tool_type_map: dict[str, str]) -> None:
+    """Called from worker_brain PRIME with Haiku-discovered classifications."""
+    _tool_type_cache.update(tool_type_map)
+
+
+def classify_tool_with_cache(tool_name: str, description: str = "") -> str:
+    """Check cache first, then static patterns. Cache result for future calls."""
+    if tool_name in _tool_type_cache:
+        return _tool_type_cache[tool_name]
+    result = classify_tool(tool_name)  # existing static classification
+    _tool_type_cache[tool_name] = result
+    return result
+
 def get_mutate_tools(tools: list[dict]) -> list[str]:
     """Return names of all mutation-class tools in the tool list."""
     return [

@@ -315,10 +315,21 @@ class MutationVerifier:
         answer = answer + "\\n\\n" + verifier.build_verification_section()
     """
 
-    def __init__(self, on_tool_call: Callable[[str, dict], Awaitable[dict]]):
+    def __init__(self, on_tool_call: Callable[[str, dict], Awaitable[dict]], write_read_map: dict[str, str] | None = None):
         self._inner = on_tool_call
+        self._write_read_map: dict[str, str] = write_read_map or {}
         self._mutations: list[dict] = []   # recorded write operations
         self._total_calls = 0
+
+    def _infer_read_tool(self, write_tool: str) -> str | None:
+        """
+        Infer the read tool for WAL checkpoint read-back.
+        Priority 1: Haiku-discovered write_read_map (exact, verified against actual tool list).
+        Priority 2: noun extraction heuristic (fallback).
+        """
+        if write_tool in self._write_read_map:
+            return self._write_read_map[write_tool]
+        return _infer_read_tool(write_tool)  # module-level noun extraction
 
     async def call(self, tool_name: str, params: dict) -> dict:
         """Drop-in replacement for on_tool_call. Records writes and reads back."""
@@ -338,7 +349,7 @@ class MutationVerifier:
         }
 
         # Attempt read-back to force SQLite WAL checkpoint
-        read_tool = _infer_read_tool(tool_name)
+        read_tool = self._infer_read_tool(tool_name)
         if read_tool:
             key_params = _extract_key_params(params)
             if key_params:
