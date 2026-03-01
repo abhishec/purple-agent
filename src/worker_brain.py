@@ -56,6 +56,7 @@ from src.dynamic_fsm import synthesize_if_needed, is_known_type                 
 from src.dynamic_tools import (                                                               # Wave 14: runtime tool factory
     load_registered_tools, is_registered_tool, call_registered_tool,
     detect_tool_gaps, synthesize_and_register,
+    detect_tool_gaps_llm,                                                                     # Wave 16: LLM-based phase-2 gap detection
 )
 from src.mutation_verifier import MutationVerifier                                            # Wave 14: write-track + WAL flush + LLM judge log
 from src.strategy_bandit import select_strategy, record_outcome as bandit_record               # Wave 15: UCB1 strategy bandit
@@ -196,10 +197,19 @@ class MiniAIWorker:
         self._tools = self._tools + registered
 
         # Wave 14: detect computation gaps + synthesize missing tools.
-        # Max 2 new tools per task (cost guard). Haiku call, 10s timeout each.
+        # Phase 1 (regex): max 3 new tools per task (cost guard). Haiku call, 10s timeout each.
+        # Wave 16 Phase 2 (LLM): if Phase 1 finds nothing and task is >= 100 chars,
+        # ask Haiku to identify custom math needs. Max 2 LLM-detected gaps, 8s timeout.
         # Synthesized tools are immediately available for this task and all future tasks.
         gaps = detect_tool_gaps(task_text, self._tools)
-        for gap in gaps[:2]:
+        # Phase 2: LLM-based detection if Phase 1 found nothing
+        if not gaps and len(task_text) >= 100:
+            try:
+                llm_gaps = await detect_tool_gaps_llm(task_text, self._tools)
+                gaps = llm_gaps[:2]
+            except Exception:
+                pass  # never block execution
+        for gap in gaps[:3]:  # allow up to 3 new tools
             try:
                 new_schema = await synthesize_and_register(gap, task_text)
                 if new_schema:

@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Track](https://img.shields.io/badge/track-AgentBeats%20Business%20Process-purple)]()
-[![Version](https://img.shields.io/badge/version-5.0.0%20Wave%2015-green)]()
+[![Version](https://img.shields.io/badge/version-5.0.0%20Wave%2016-green)]()
 
 **Live endpoint:** `https://purple.agentbench.usebrainos.com`
 
@@ -58,8 +58,25 @@ A production-grade AI worker for business process automation — distilled from 
 ### 1. Dynamic FSM Synthesizer (Wave 13)
 Unknown process types get a Haiku-synthesized FSM definition at runtime — states + per-state instructions customized to the specific process.
 
-### 2. Dynamic Tool Factory (Wave 14)
-Detects computation gaps (NPV, IRR, bond pricing, WACC, Monte Carlo, Black-Scholes, VaR, Newton-Raphson...) from task text, synthesizes Python implementations via Haiku, validates in a restricted sandbox, and hot-loads them at runtime. Zero hardcoded financial tools.
+### 2. Dynamic Tool Factory (Wave 14 + Wave 16)
+Two-phase universal gap detection covers any business computation a task might require:
+
+**Phase 1 (regex, zero API cost):** 30+ static patterns across all business domains:
+- Finance: NPV, IRR, bond pricing, WACC, compound interest, depreciation
+- Monte Carlo simulation, Black-Scholes, VaR, Newton-Raphson
+- HR/Payroll: overtime (FLSA), proration, benefits cost, FTE/attrition
+- SLA/Operations: uptime %, SLA credits, penalty/liquidated damages
+- Supply Chain: EOQ, safety stock, FIFO/LIFO/weighted-avg inventory
+- Date/Time: business days, pro-rata periods, AR aging buckets
+- Statistics: z-score, weighted average, linear regression
+- Tax: VAT/GST (add/extract/reverse), withholding, gross-up, capital allowances
+- Risk/Compliance: weighted risk score, AHP, Herfindahl concentration index
+- AR/Collections: bad debt provision (ECL), DSO, collection efficiency
+- Contract Math: escalation clauses, early termination fees
+
+**Phase 2 (LLM-based, Haiku):** When Phase 1 finds nothing and the task is >= 100 chars, asks Haiku to identify what custom calculations the task requires. Max 2 LLM-detected gaps, 8s timeout — never blocks execution.
+
+Synthesizes Python implementations via Haiku, validates in a restricted sandbox, and hot-loads them at runtime. Zero hardcoded tools — registry grows with every new computation type.
 
 ### 3. Monte Carlo + Numerical Methods (Wave 15)
 Sandbox expanded with `random` + `statistics` modules, enabling synthesized tools for:
@@ -103,7 +120,7 @@ Based on SOP-Bench, AgentArch, and MCPToolBench++ research:
 | Branching logic | FSM state transitions + HITL gate |
 | DB mutation persistence | WAL flush via mutation verifier read-backs |
 | Novel process types | Dynamic FSM synthesizer |
-| Novel computation | Dynamic tool factory + MC sandbox |
+| Novel computation | Dynamic tool factory: 30+ patterns + LLM phase-2 (Wave 16) |
 | Self-correction | COMPUTE reflection gate + numeric MoA |
 | Compound learning | UCB1 bandit + RL case log + knowledge base |
 

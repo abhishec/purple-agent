@@ -325,6 +325,453 @@ _GAP_PATTERNS: list[dict] = [
             "'details' with iterations, converged (bool), npv_at_result."
         ),
     },
+    # ── Wave 16: HR / Payroll ────────────────────────────────────────────────
+    {
+        "key": "hr_overtime",
+        "patterns": [
+            r"\bovertime\b", r"\btime.and.a.half\b", r"\bflsa\b",
+            r"\bot pay\b", r"\bovertime pay\b", r"\bovertime rate\b",
+            r"\bdouble.time\b", r"\bovertime hours\b",
+        ],
+        "description": (
+            "Overtime pay calculation per FLSA rules. "
+            "Function name: hr_overtime. "
+            "Params: regular_hours (float), overtime_hours (float), "
+            "hourly_rate (float), overtime_multiplier (float, default 1.5). "
+            "Returns dict with 'result' (total pay), 'details' with regular_pay, "
+            "overtime_pay, total_hours."
+        ),
+    },
+    {
+        "key": "hr_proration",
+        "patterns": [
+            r"\bprorat\w+\b", r"\bprorated salary\b", r"\bpartial.period pay\b",
+            r"\bmid.month\b", r"\bpartial month\b", r"\bpro.rata\b",
+            r"\bdays worked.*salary\b", r"\bsalary.*partial\b",
+        ],
+        "description": (
+            "Prorated salary for partial pay periods. "
+            "Function name: hr_proration. "
+            "Params: annual_salary (float), working_days_in_period (int), "
+            "total_working_days_in_period (int), pay_frequency (str: 'monthly'/'biweekly'/'weekly'). "
+            "Returns dict with 'result' (prorated pay amount), 'details' with daily_rate, "
+            "full_period_pay, days_fraction."
+        ),
+    },
+    {
+        "key": "hr_benefits_cost",
+        "patterns": [
+            r"\bbenefits cost\b", r"\bemployer contribution\b",
+            r"\btotal comp\w*\b", r"\bbenefits.*per employee\b",
+            r"\bemployee benefits\b", r"\bbenefits burden\b",
+            r"\bpayroll burden\b", r"\btotal compensation\b",
+        ],
+        "description": (
+            "Total compensation and benefits cost calculation. "
+            "Function name: hr_benefits_cost. "
+            "Params: base_salary (float), health_insurance_monthly (float), "
+            "retirement_match_pct (float, employer 401k match as %, e.g. 3.0), "
+            "other_benefits_annual (float, default 0). "
+            "Returns dict with 'result' (total annual comp cost), 'details' with "
+            "salary, benefits_annual, retirement_contribution, total_cost, burden_rate_pct."
+        ),
+    },
+    {
+        "key": "hr_headcount",
+        "patterns": [
+            r"\bfte\b", r"\bfull.time equivalent\b", r"\bheadcount ratio\b",
+            r"\battrition rate\b", r"\bturnover rate\b", r"\bheadcount\b",
+            r"\bemployee count\b", r"\bstaff ratio\b",
+        ],
+        "description": (
+            "Headcount metrics: FTE, attrition rate, and span of control. "
+            "Function name: hr_headcount. "
+            "Params: full_time_count (int), part_time_count (int, default 0), "
+            "part_time_hours_avg (float, avg weekly hours of part-timers, default 20), "
+            "separations_in_period (int, default 0), "
+            "avg_headcount_in_period (float, default None — uses full_time_count). "
+            "Returns dict with 'result' (total FTE), 'details' with fte_full_time, "
+            "fte_part_time, annualized_attrition_rate_pct."
+        ),
+    },
+    # ── Wave 16: SLA / Operations ────────────────────────────────────────────
+    {
+        "key": "ops_sla_credit",
+        "patterns": [
+            r"\bsla credit\b", r"\bservice credit\b", r"\bsla.*penalty\b",
+            r"\buptime.*sla\b", r"\bsla.*uptime\b", r"\bdowntime penalty\b",
+            r"\bservice level.*credit\b", r"\bsla.*breach\b",
+        ],
+        "description": (
+            "SLA credit calculation based on uptime percentage breach. "
+            "Function name: ops_sla_credit. "
+            "Params: monthly_fee (float), actual_uptime_pct (float, e.g. 99.1), "
+            "sla_tiers (list of dicts with 'min_uptime' and 'credit_pct', "
+            "sorted descending by min_uptime). "
+            "Returns dict with 'result' (credit amount), 'details' with "
+            "uptime_pct, sla_tier_matched, credit_pct, credit_amount."
+        ),
+    },
+    {
+        "key": "ops_uptime",
+        "patterns": [
+            r"\bavailability\b.*\b(percent|%)\b", r"\bmttr\b", r"\bmtbf\b",
+            r"\buptime.?percent\w*\b", r"\bdowntime.?minutes\b",
+            r"\bincident.?duration\b", r"\bavailability.?calc\w*\b",
+            r"\bservice.?availability\b",
+        ],
+        "description": (
+            "System availability and reliability metrics (uptime %, MTTR, MTBF). "
+            "Function name: ops_uptime. "
+            "Params: total_minutes_in_period (int), downtime_minutes (float), "
+            "incident_count (int, default 1). "
+            "Returns dict with 'result' (uptime_pct), 'details' with "
+            "uptime_pct, downtime_pct, downtime_minutes, mttr_minutes, "
+            "availability_nines (e.g. '2-nines')."
+        ),
+    },
+    {
+        "key": "ops_penalty",
+        "patterns": [
+            r"\bliquidated damages\b", r"\blate delivery penalty\b",
+            r"\bbreach penalty\b", r"\bpenalty.*per day\b",
+            r"\bcontract.*penalty\b", r"\bdelay penalty\b",
+            r"\bpenalty interest\b", r"\bpenalty calculation\b",
+        ],
+        "description": (
+            "Contract breach and late-delivery penalty calculation. "
+            "Function name: ops_penalty. "
+            "Params: contract_value (float), days_late (int), "
+            "daily_penalty_rate (float, as decimal e.g. 0.001 for 0.1%/day), "
+            "max_penalty_pct (float, cap as decimal e.g. 0.10 for 10% cap). "
+            "Returns dict with 'result' (penalty amount), 'details' with "
+            "uncapped_penalty, capped_at, penalty_rate_used, days_late."
+        ),
+    },
+    # ── Wave 16: Supply Chain ────────────────────────────────────────────────
+    {
+        "key": "sc_eoq",
+        "patterns": [
+            r"\beoq\b", r"\beconomic order quantity\b", r"\breorder point\b",
+            r"\bsafety stock\b", r"\blead time demand\b",
+            r"\border quantity\b", r"\binventory.?order\b",
+        ],
+        "description": (
+            "Economic Order Quantity (EOQ), reorder point, and safety stock. "
+            "Function name: sc_eoq. "
+            "Params: annual_demand (float, units/year), ordering_cost (float, $ per order), "
+            "holding_cost_per_unit (float, $ per unit per year), "
+            "lead_time_days (float, default 0), daily_demand_stddev (float, default 0), "
+            "service_level_z (float, z-score for service level, default 1.645 for 95%). "
+            "Returns dict with 'result' (EOQ in units), 'details' with "
+            "eoq, reorder_point, safety_stock, orders_per_year, total_annual_cost."
+        ),
+    },
+    {
+        "key": "sc_inventory_value",
+        "patterns": [
+            r"\bfifo\b", r"\blifo\b", r"\bweighted average cost\b",
+            r"\binventory valuation\b", r"\bcost of goods sold\b",
+            r"\bcogs\b", r"\binventory.*method\b",
+        ],
+        "description": (
+            "Inventory valuation using FIFO, LIFO, or weighted average cost method. "
+            "Function name: sc_inventory_value. "
+            "Params: purchases (list of dicts with 'units' and 'unit_cost'), "
+            "units_sold (int), method (str: 'fifo', 'lifo', or 'weighted_avg'). "
+            "Returns dict with 'result' (COGS), 'details' with "
+            "cogs, ending_inventory_units, ending_inventory_value, avg_unit_cost."
+        ),
+    },
+    {
+        "key": "sc_stockout_risk",
+        "patterns": [
+            r"\bstockout\b", r"\bstockout.?prob\w*\b", r"\bservice.?level\b",
+            r"\bfill.?rate\b", r"\binventory.?risk\b",
+            r"\bstockout.?risk\b", r"\bdemand.?uncertainty\b",
+        ],
+        "description": (
+            "Stockout probability and service level calculation. "
+            "Function name: sc_stockout_risk. "
+            "Params: avg_daily_demand (float), demand_stddev (float), "
+            "lead_time_days (float), reorder_point (float). "
+            "Returns dict with 'result' (service_level_pct), 'details' with "
+            "service_level_pct, stockout_probability_pct, z_score, "
+            "expected_demand_during_lead_time, safety_stock_implied."
+        ),
+    },
+    # ── Wave 16: Date / Time Math ────────────────────────────────────────────
+    {
+        "key": "dt_business_days",
+        "patterns": [
+            r"\bbusiness days\b", r"\bworking days\b", r"\bworkday\w*\b",
+            r"\bdays between.*dates\b", r"\bexcluding.*holiday\b",
+            r"\bbusiness.?day.?count\b", r"\bworking.?day.?calc\w*\b",
+        ],
+        "description": (
+            "Calculate business (working) days between two dates, excluding weekends. "
+            "Function name: dt_business_days. "
+            "Params: start_date (str, ISO format YYYY-MM-DD), "
+            "end_date (str, ISO format YYYY-MM-DD), "
+            "holiday_count (int, number of public holidays in range, default 0). "
+            "Use math only — no datetime imports (unavailable in sandbox). "
+            "Approximate: parse year/month/day from string manually. "
+            "Algorithm: total_days = end - start; weeks = total_days // 7; "
+            "weekdays = weeks * 5 + min(extra_days, 5 - start_weekday). "
+            "Returns dict with 'result' (business days count), 'details' with "
+            "total_calendar_days, weekends_excluded, holidays_excluded."
+        ),
+    },
+    {
+        "key": "dt_prorata",
+        "patterns": [
+            r"\bpro.?rata\b", r"\bpartial period\b", r"\bdays.*in.*month\b",
+            r"\bprorated.*days\b", r"\bpro.?rat\w+\b",
+            r"\bmonthly.*days\b", r"\bfraction of.*period\b",
+        ],
+        "description": (
+            "Pro-rata calculation for partial periods (daily/monthly proration). "
+            "Function name: dt_prorata. "
+            "Params: full_period_amount (float), days_in_period (int), "
+            "total_days_in_period (int). "
+            "Returns dict with 'result' (prorated amount), 'details' with "
+            "daily_rate, days_fraction, full_period_amount."
+        ),
+    },
+    {
+        "key": "dt_aging",
+        "patterns": [
+            r"\baging\b.*\b(bucket|analysis|report)\b",
+            r"\bdays.*outstanding\b", r"\bar.*aging\b",
+            r"\breceivable.*aging\b", r"\boverdue.*bucket\b",
+            r"\b0.30.*(day|bucket)\b", r"\b31.60\b", r"\b61.90\b",
+            r"\b90\+\b.*\bday\b",
+        ],
+        "description": (
+            "Accounts receivable aging bucket analysis. "
+            "Function name: dt_aging. "
+            "Params: invoices (list of dicts with 'amount' and 'days_outstanding'). "
+            "Bucket boundaries: 0-30, 31-60, 61-90, 91-120, 120+ days. "
+            "Returns dict with 'result' (total outstanding), 'details' with "
+            "bucket_0_30, bucket_31_60, bucket_61_90, bucket_91_120, bucket_over_120, "
+            "each as {'count': int, 'amount': float}, total_outstanding."
+        ),
+    },
+    # ── Wave 16: Statistics ──────────────────────────────────────────────────
+    {
+        "key": "stats_zscore",
+        "patterns": [
+            r"\bz.?score\b", r"\bpercentile rank\b",
+            r"\bstandard deviations? from\b", r"\bz.stat\w*\b",
+            r"\bnormal distribution\b", r"\bstandardiz\w+\b",
+        ],
+        "description": (
+            "Z-score and percentile rank calculation. "
+            "Function name: stats_zscore. "
+            "Params: value (float), mean (float), std_dev (float). "
+            "Returns dict with 'result' (z_score), 'details' with "
+            "z_score, percentile_approx (using erf approximation: "
+            "0.5*(1+math.erf(z/math.sqrt(2)))*100), interpretation (str)."
+        ),
+    },
+    {
+        "key": "stats_weighted_avg",
+        "patterns": [
+            r"\bweighted average\b", r"\bweighted score\b",
+            r"\bcomposite score\b", r"\bweighted.?mean\b",
+            r"\bweighted.?calc\w*\b", r"\bweight\w+.*score\b",
+        ],
+        "description": (
+            "Weighted average / composite score calculation. "
+            "Function name: stats_weighted_avg. "
+            "Params: values (list of float), weights (list of float). "
+            "Returns dict with 'result' (weighted average), 'details' with "
+            "weighted_avg, sum_of_weights, weighted_sum, "
+            "components (list of {value, weight, contribution})."
+        ),
+    },
+    {
+        "key": "stats_regression",
+        "patterns": [
+            r"\blinear regression\b", r"\btrend line\b",
+            r"\br.?squared\b", r"\bslope.*intercept\b",
+            r"\bleast squares\b", r"\bregression.*analysis\b",
+            r"\bline of best fit\b",
+        ],
+        "description": (
+            "Simple linear regression (y = mx + b) with R-squared. "
+            "Function name: stats_regression. "
+            "Params: x_values (list of float), y_values (list of float). "
+            "Returns dict with 'result' (slope m), 'details' with "
+            "slope, intercept, r_squared, equation_str (e.g. 'y = 2.5x + 10.3'), "
+            "predict_next (predicted y for x = last_x + 1)."
+        ),
+    },
+    # ── Wave 16: Tax ─────────────────────────────────────────────────────────
+    {
+        "key": "tax_vat",
+        "patterns": [
+            r"\bvat\b", r"\bgst\b", r"\bvalue.?added.?tax\b",
+            r"\bgoods.*services.*tax\b", r"\bvat.*calc\w*\b",
+            r"\breverse.*vat\b", r"\bvat.*exclusive\b", r"\bvat.*inclusive\b",
+            r"\btax.*inclusive\b", r"\btax.*exclusive\b",
+        ],
+        "description": (
+            "VAT/GST calculation: exclusive, inclusive, and reverse. "
+            "Function name: tax_vat. "
+            "Params: amount (float), vat_rate (float, as %, e.g. 20 for 20%), "
+            "mode (str: 'add' to add VAT to net, 'extract' to extract VAT from gross). "
+            "Returns dict with 'result' (vat_amount), 'details' with "
+            "net_amount, vat_amount, gross_amount, vat_rate_pct, mode."
+        ),
+    },
+    {
+        "key": "tax_withholding",
+        "patterns": [
+            r"\bwithholding tax\b", r"\bgross.?up\b", r"\bnet.?to.?gross\b",
+            r"\bgross.?up.?calc\w*\b", r"\bwithhold\w+\b",
+            r"\bpaye\b", r"\btax.*gross.?up\b",
+        ],
+        "description": (
+            "Withholding tax and gross-up calculation (net-to-gross). "
+            "Function name: tax_withholding. "
+            "Params: amount (float), withholding_rate (float, as %, e.g. 30 for 30%), "
+            "mode (str: 'withhold' = deduct from gross, 'gross_up' = gross up from net). "
+            "Returns dict with 'result' (tax_withheld), 'details' with "
+            "gross_amount, net_amount, tax_withheld, effective_rate_pct."
+        ),
+    },
+    {
+        "key": "tax_depreciation_tax",
+        "patterns": [
+            r"\btax depreciation\b", r"\bcapital allowance\b",
+            r"\baccelerated depreciation\b", r"\bbonusdepreciation\b",
+            r"\bsection 179\b", r"\bmacrs\b",
+        ],
+        "description": (
+            "Tax depreciation / capital allowances calculation. "
+            "Function name: tax_depreciation_tax. "
+            "Params: asset_cost (float), allowance_rate (float, as %, e.g. 25 for 25%/year), "
+            "years (int), method (str: 'reducing_balance' or 'straight_line'). "
+            "Returns dict with 'result' (first_year_allowance), 'details' with "
+            "annual_schedule (list of {year, allowance, tax_base}), "
+            "total_allowances, final_tax_base."
+        ),
+    },
+    # ── Wave 16: Risk / Compliance ────────────────────────────────────────────
+    {
+        "key": "risk_weighted_score",
+        "patterns": [
+            r"\brisk.?score\b", r"\bweighted risk\b", r"\bahp\b",
+            r"\bcompliance.?score\b", r"\bkyc.?risk\b",
+            r"\brisk.?rating\b", r"\brisk.?matrix\b",
+            r"\bpriority.?matrix\b", r"\brisk.?calc\w*\b",
+        ],
+        "description": (
+            "Weighted risk scoring (e.g. AHP, KYC risk rating, compliance score). "
+            "Function name: risk_weighted_score. "
+            "Params: factors (list of dicts with 'name', 'score' (0-10), 'weight' (0-1)), "
+            "scale_max (float, maximum possible score, default 10). "
+            "Returns dict with 'result' (composite_score), 'details' with "
+            "composite_score, score_pct, risk_band (Low/Medium/High/Critical), "
+            "factor_breakdown (list of {name, score, weight, contribution})."
+        ),
+    },
+    {
+        "key": "risk_concentration",
+        "patterns": [
+            r"\bconcentration risk\b", r"\bherfindahl\b", r"\bhhi\b",
+            r"\btop.?\d+.?concentration\b", r"\bmarket share.*concentr\w*\b",
+            r"\bconcentration.?index\b", r"\bclient.?concentration\b",
+        ],
+        "description": (
+            "Concentration risk metrics: Herfindahl-Hirschman Index (HHI) and top-N share. "
+            "Function name: risk_concentration. "
+            "Params: shares (list of float, market/portfolio share values, "
+            "either as decimals summing to 1 or counts summing to total), "
+            "top_n (int, number of largest to report, default 3). "
+            "Returns dict with 'result' (hhi_score), 'details' with "
+            "hhi, hhi_normalized (0-1), top_n_concentration_pct, "
+            "risk_band ('Low'/<1500 / 'Moderate'/1500-2500 / 'High'/>2500), "
+            "shares_pct (list)."
+        ),
+    },
+    # ── Wave 16: AR / Collections ─────────────────────────────────────────────
+    {
+        "key": "ar_bad_debt",
+        "patterns": [
+            r"\bbad debt\b", r"\bexpected credit loss\b", r"\becl\b",
+            r"\bimpairment\b", r"\bdebt.?provision\b",
+            r"\bprovision.*doubtful\b", r"\bdoubtful.*debt\b",
+            r"\bwrite.?off\b.*\breceivable\b",
+        ],
+        "description": (
+            "Bad debt provision and expected credit loss (ECL) calculation. "
+            "Function name: ar_bad_debt. "
+            "Params: receivables_by_bucket (list of dicts with 'amount' and 'days_outstanding'), "
+            "provision_rates (dict mapping age bucket labels to provision rates as decimals, "
+            "e.g. {'0_30': 0.01, '31_60': 0.05, '61_90': 0.10, '91_120': 0.25, 'over_120': 0.50}). "
+            "Returns dict with 'result' (total_provision), 'details' with "
+            "provision_by_bucket, total_receivables, provision_rate_overall_pct."
+        ),
+    },
+    {
+        "key": "ar_collection_rate",
+        "patterns": [
+            r"\bdso\b", r"\bdays sales outstanding\b",
+            r"\bcollection.?rate\b", r"\bcollection.?effic\w*\b",
+            r"\bcollect\w+.*receiv\w+\b", r"\bcash.?conversion\b",
+            r"\breceivable.?turnover\b",
+        ],
+        "description": (
+            "AR collection efficiency: DSO, collection rate, receivable turnover. "
+            "Function name: ar_collection_rate. "
+            "Params: ending_ar (float), revenue_in_period (float), "
+            "period_days (int, e.g. 90 for quarter), "
+            "cash_collected (float, default None — skips collection rate if not provided). "
+            "Returns dict with 'result' (dso_days), 'details' with "
+            "dso_days, collection_rate_pct, receivable_turnover, "
+            "revenue_per_day."
+        ),
+    },
+    # ── Wave 16: Contract Math ────────────────────────────────────────────────
+    {
+        "key": "contract_escalation",
+        "patterns": [
+            r"\bescalation clause\b", r"\bprice escalation\b",
+            r"\bcpi.?adjust\w*\b", r"\bannual.?increase\b",
+            r"\bescalat\w+.*contract\b", r"\bcontract.*escalat\w+\b",
+            r"\binflation.?adjust\w*\b",
+        ],
+        "description": (
+            "Contract price escalation / CPI adjustment over multiple periods. "
+            "Function name: contract_escalation. "
+            "Params: base_amount (float), annual_escalation_rate (float, as %, e.g. 3.0), "
+            "years (int). "
+            "Returns dict with 'result' (final_year_amount), 'details' with "
+            "yearly_amounts (list of {year, amount}), total_over_term, "
+            "cumulative_increase_pct."
+        ),
+    },
+    {
+        "key": "contract_termination_fee",
+        "patterns": [
+            r"\bearly termination\b", r"\btermination fee\b",
+            r"\bearly.?exit.?fee\b", r"\btermination.?penalty\b",
+            r"\bremaining.*term.*penalty\b", r"\bbreak.?fee\b",
+            r"\bcontract.?cancel\w*\b",
+        ],
+        "description": (
+            "Early contract termination fee calculation. "
+            "Function name: contract_termination_fee. "
+            "Params: monthly_value (float), remaining_months (int), "
+            "termination_fee_pct (float, % of remaining contract value, e.g. 20.0 for 20%), "
+            "notice_period_months (int, free months already given, default 0). "
+            "Returns dict with 'result' (termination_fee), 'details' with "
+            "remaining_contract_value, fee_pct, termination_fee, "
+            "effective_months_charged."
+        ),
+    },
 ]
 
 # Amortization tool code — seeded into registry at startup.
@@ -432,13 +879,102 @@ def detect_tool_gaps(task_text: str, existing_tools: list[dict]) -> list[dict]:
     return gaps
 
 
+_LLM_GAP_DETECTION_SYSTEM = """\
+You are a business process analyst. Your job is to identify custom mathematical calculations
+that a business process task requires but that are NOT:
+- Simple database read/write operations (SELECT, INSERT, UPDATE)
+- Standard tool calls (already listed)
+- Basic arithmetic (addition, subtraction, percentage of a known number)
+
+Focus ONLY on formulas that need a dedicated Python function to implement correctly
+(e.g. amortization schedule, z-score normalization, EOQ, weighted risk score).
+
+Return a JSON array of objects. Each object: {
+  "key": "snake_case_name",
+  "description": "Function name: snake_case_name. Params: ... Returns dict with 'result' (scalar) and 'details'."
+}
+
+If no custom math is needed, return [].
+Return ONLY valid JSON — no markdown, no explanation."""
+
+
+async def detect_tool_gaps_llm(task_text: str, existing_tools: list[dict]) -> list[dict]:
+    """
+    Phase 2: LLM-based gap detection for computations not in static patterns.
+    Only called when Phase 1 (regex) finds no gaps.
+    Asks Haiku to identify what custom calculations this task needs.
+    Returns list of gap dicts with {key, description} — max 2 items.
+    Timeout: 8 seconds. Never raises — returns [] on any failure.
+    """
+    try:
+        # Build list of existing tool names so Haiku knows what's already available
+        _load_registry()
+        existing_names: list[str] = []
+        for t in existing_tools:
+            name = t.get("name") or t.get("function", {}).get("name", "")
+            if name:
+                existing_names.append(name)
+        existing_names.extend(_registry_fns.keys())
+
+        tools_list = ", ".join(existing_names[:30]) if existing_names else "none"
+
+        prompt = (
+            f"Business process task:\n{task_text[:1500]}\n\n"
+            f"Already available tools/functions: {tools_list}\n\n"
+            "List ONLY the specific mathematical calculations this task requires "
+            "that are NOT simple database operations and NOT already covered by the listed tools. "
+            "Return JSON array. If no custom math is needed, return []."
+        )
+
+        from anthropic import AsyncAnthropic
+        client = AsyncAnthropic()
+        msg = await asyncio.wait_for(
+            client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=400,
+                system=_LLM_GAP_DETECTION_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            timeout=8.0,
+        )
+        raw = msg.content[0].text if msg.content else "[]"
+
+        # Strip markdown fences
+        clean = raw.strip()
+        if clean.startswith("```"):
+            clean = re.sub(r"^```[a-z]*\n?", "", clean)
+            clean = re.sub(r"\n?```$", "", clean).strip()
+
+        parsed = json.loads(clean)
+        if not isinstance(parsed, list):
+            return []
+
+        gaps = []
+        for item in parsed[:2]:  # cost guard: max 2 LLM-detected gaps
+            if isinstance(item, dict) and item.get("key") and item.get("description"):
+                key = str(item["key"]).strip()
+                desc = str(item["description"]).strip()
+                # Skip if already registered or in existing tools
+                if key not in _registry_fns and key not in existing_names:
+                    gaps.append({"key": key, "description": desc})
+
+        return gaps
+
+    except Exception:
+        return []  # never block execution
+
+
 # ── Haiku synthesis ──────────────────────────────────────────────────────────
 
 _SYNTHESIS_SYSTEM = """\
-You are a financial computation specialist. Implement a precise Python function.
+You are a business calculation specialist. Implement a precise Python function for any business domain.
+
+Domains you handle: Finance, HR/Payroll, SLA/Operations, Supply Chain, Date/Time math,
+Statistics, Tax (VAT/GST/withholding), Risk/Compliance scoring, AR/Collections,
+Contract math, Inventory valuation, and any other business process calculation.
 
 The function runs in a sandbox with ONLY these available:
-- math module (math.log, math.exp, math.sqrt, math.pow, math.floor, math.ceil, math.pi, math.e)
+- math module (math.log, math.exp, math.sqrt, math.pow, math.floor, math.ceil, math.pi, math.e, math.erf)
 - Decimal (from decimal module) for precision arithmetic
 - ROUND_HALF_UP (rounding mode constant)
 - random module: random.gauss(mu, sigma), random.seed(n), random.uniform(a, b), random.random()
@@ -447,14 +983,15 @@ The function runs in a sandbox with ONLY these available:
   enumerate, zip, list, dict, tuple, set, isinstance, pow, divmod, sorted, any, all
 - ValueError, ZeroDivisionError for error handling
 
-DO NOT use: import, open, eval, exec, __import__, os, sys, any external library.
+DO NOT use: import, open, eval, exec, __import__, os, sys, datetime, any external library.
+For date math: parse year/month/day from ISO strings manually using string splitting and int().
 
 Requirements:
 1. Function name must EXACTLY match the specified name
 2. Accept the specified parameters as keyword-capable positional args
-3. Use Decimal for ALL financial calculations (avoid float precision loss)
+3. Use Decimal for ALL monetary calculations (avoid float precision loss)
 4. Return dict with "result" (primary scalar answer) and "details" (dict of workings)
-5. Handle edge cases: zero rates, zero periods, negative inputs
+5. Handle edge cases: zero rates, zero periods, empty lists, negative inputs
 
 Respond ONLY with valid JSON (no markdown, no explanation):
 {
