@@ -162,8 +162,8 @@ async def _call_reflection(
     import anthropic
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
-    task_snippet = task_text[:400]
-    answer_snippet = answer[:600]
+    task_snippet = task_text[:800]
+    answer_snippet = answer[:1000]
     process_label = process_type.replace("_", " ").title()
 
     resp = await client.messages.create(

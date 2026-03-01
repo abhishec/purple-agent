@@ -270,7 +270,7 @@ class MiniAIWorker:
                 resp = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: client.messages.create(
-                        model="claude-haiku-4-5",
+                        model="claude-haiku-4-5-20251001",
                         max_tokens=512,
                         messages=[{"role": "user", "content": prompt}],
                     ),
