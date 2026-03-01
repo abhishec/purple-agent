@@ -20,6 +20,7 @@ import json
 import re
 
 from src.config import ANTHROPIC_API_KEY
+from src.token_budget import _is_bracket_format
 
 REFLECTION_MODEL = "claude-haiku-4-5-20251001"
 REFLECTION_TIMEOUT = 8.0
@@ -45,7 +46,9 @@ async def reflect_on_answer(
     # Haiku would score '["INV-001"]' as "incomplete" triggering a corruption pass.
     # This check must come BEFORE the API-key check so bracket answers always get
     # score=1.0 even when the API key is missing (e.g. in test environments).
-    if answer.strip().startswith('['):
+    # Use strict JSON-array check: prose like "Rejected. [Reason: ...]" must
+    # not skip reflection — only true JSON lists like ["INV-001"] should.
+    if _is_bracket_format(answer):
         return {"score": 1.0, "complete": True, "missing": [], "improve_prompt": ""}
 
     if not REFLECTION_ENABLED or not ANTHROPIC_API_KEY:
@@ -77,7 +80,8 @@ def _heuristic_score(answer: str, task_text: str, tool_count: int) -> float:
     # Length signals
     answer_stripped = answer.strip()
     length = len(answer_stripped)
-    is_bracket_format = answer_stripped.startswith('[')
+    # Strict JSON-array check — prose starting with '[' must not get bracket bonus.
+    is_bracket_format = _is_bracket_format(answer_stripped)
 
     if is_bracket_format:
         # Bracket-format = exact_match target — correct format, not too short

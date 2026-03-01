@@ -13,6 +13,7 @@ Fixes applied (2026-03-01):
 - Added _update_case_entry_metadata() for enriching existing case entries
 """
 from __future__ import annotations
+from src.token_budget import _is_bracket_format
 import json
 import os
 import re
@@ -99,7 +100,9 @@ def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> f
 
     # Bracket-format exact_match answers are valid regardless of length —
     # do not penalize '["INV-001"]' as "too short".
-    is_bracket_format = answer_stripped.startswith('[')
+    # Use strict JSON-array check: prose like "Rejected. [Reason: ...]" must
+    # not receive the bracket bonus — only true JSON lists like ["INV-001"].
+    is_bracket_format = _is_bracket_format(answer_stripped)
 
     if is_bracket_format:
         score += 0.15  # correct format signal

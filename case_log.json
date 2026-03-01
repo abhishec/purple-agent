@@ -1,0 +1,32 @@
+[
+  {
+    "case_id": "6e6a3c86",
+    "task_summary": "Test task for audit",
+    "keywords": [
+      "test",
+      "audit"
+    ],
+    "outcome": "success",
+    "quality": 0.83,
+    "what_worked": "Used 3 tool calls. Policy enforced correctly",
+    "what_failed": "",
+    "tool_count": 3,
+    "domain": "invoice_reconciliation",
+    "timestamp": 1772356573.010284
+  },
+  {
+    "case_id": "ecd80032",
+    "task_summary": "Test task for audit",
+    "keywords": [
+      "test",
+      "audit"
+    ],
+    "outcome": "success",
+    "quality": 0.83,
+    "what_worked": "Used 3 tool calls. Policy enforced correctly",
+    "what_failed": "",
+    "tool_count": 3,
+    "domain": "invoice_reconciliation",
+    "timestamp": 1772356635.399772
+  }
+]
