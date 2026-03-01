@@ -18,8 +18,12 @@ Secondary benefit:
 
 Architecture:
   MutationVerifier wraps the on_tool_call callback.
-  - Detects write operations by verb prefix (update_, create_, approve_, etc.)
-  - After each write, infers the corresponding read tool and calls it
+  - Detects write operations by INVERTED logic: anything NOT starting with a
+    known READ prefix is treated as a write. This catches all novel/domain-specific
+    write verbs (escalate_, flag_, mark_, close_, transfer_, etc.) without needing
+    an exhaustive write-verb whitelist.
+  - After each write, infers the corresponding read tool via smart noun extraction
+    (no hardcoded tool-name pairs needed).
   - Records expected state vs. verified state
   - build_verification_section() produces the log for the final answer
 
@@ -34,163 +38,252 @@ from __future__ import annotations
 import re
 from typing import Callable, Awaitable
 
-# ── Write verb detection ────────────────────────────────────────────────────
+# ── Write verb detection (INVERTED ARCHITECTURE) ────────────────────────────
+#
+# We whitelist READ prefixes (finite, consistent across all domains).
+# Anything NOT matching a read prefix is treated as a WRITE.
+#
+# Rationale for inversion:
+#   - Write verbs are open-ended, domain-specific, unpredictable (escalate_,
+#     flag_, lodge_, raise_, dispatch_, finalize_, certify_, etc.)
+#   - Read verbs are finite and consistent across every domain
+#   - False positive (treating a read as write): cost = one extra GET call (cheap)
+#   - False negative (treating a write as read): cost = functional=0 (catastrophic)
 
-# Tools whose names start with these prefixes cause DB state changes.
-_WRITE_VERBS = frozenset({
-    "update", "create", "insert", "delete", "remove", "set",
-    "approve", "reject", "close", "open", "process", "submit",
-    "record", "add", "assign", "revoke", "grant", "cancel",
-    "archive", "restore", "mark", "flag", "complete", "resolve",
-    "post", "send", "publish", "issue", "apply", "commit",
-    "transfer", "disburse", "pay", "charge", "refund", "credit",
-    "debit", "book", "lock", "unlock", "enable", "disable",
-    # Competition-common side-effect verbs: notifications, scheduling, lifecycle
-    "notify", "schedule", "escalate", "draft", "trigger", "execute",
-    "suspend", "terminate", "migrate", "provision", "deprovision",
-    "remediate", "offboard", "onboard", "rotate", "revoke",
-    # Business-process mutation verbs — critical for competition tasks
-    "modify",   # e.g. modify_order_items, modify_lease_terms
-    "adjust",   # e.g. adjust_payment, adjust_balance
-    "void",     # e.g. void_invoice, void_transaction
-    "reverse",  # e.g. reverse_transaction
-    "amend",    # e.g. amend_contract
-    "patch",    # e.g. patch_record
-    # Additional write verbs: data operations
-    "replace",  # e.g. replace_item, replace_document
-    "upsert",   # e.g. upsert_record
-    "merge",    # e.g. merge_accounts
-    # Lifecycle / status-change verbs
-    "acknowledge",  # e.g. acknowledge_alert
-    "activate",     # e.g. activate_account
-    "deactivate",   # e.g. deactivate_user
-    "link",         # e.g. link_account
-    "unlink",       # e.g. unlink_device
-    "release",      # e.g. release_hold
-    "hold",         # e.g. hold_shipment
-    "authorize",    # e.g. authorize_payment
-    "confirm",      # e.g. confirm_shipment (NOT confirm_with_user — intercepted separately)
-    "extend",       # e.g. extend_lease, extend_deadline
-    "renew",        # e.g. renew_subscription, renew_contract
-})
+_READ_PREFIXES = frozenset([
+    "get_", "list_", "search_", "find_", "fetch_", "describe_",
+    "count_", "query_", "check_", "view_", "show_", "report_",
+    "read_", "lookup_", "retrieve_", "browse_", "filter_",
+    "inspect_", "audit_", "review_", "calculate_", "compute_",
+    "analyze_", "summarize_", "export_", "preview_", "validate_",
+    "verify_", "test_", "ping_", "health_", "status_",
+    "estimate_", "compare_", "diff_", "trace_", "watch_",
+])
 
-# These verb prefixes reliably identify read operations (skip these for write detection)
-_READ_VERBS = frozenset({
-    "get", "list", "fetch", "query", "search", "find", "read",
-    "check", "retrieve", "describe", "show", "count", "filter",
-    "lookup", "calculate", "compute", "estimate",
-})
+# Tools explicitly excluded from write detection despite not starting with a
+# read prefix. Add any non-DB-write tools here.
+_WRITE_EXCLUSIONS = frozenset([
+    "confirm_with_user",
+])
 
 
 def _is_write_tool(tool_name: str) -> bool:
-    """Return True if the tool name starts with a write-action verb."""
-    first_word = tool_name.split("_")[0].lower()
-    return first_word in _WRITE_VERBS and first_word not in _READ_VERBS
+    """
+    Return True if the tool name represents a DB-mutating operation.
+
+    Logic: anything NOT starting with a known READ prefix is a write.
+    This catches all novel/domain-specific write verbs without enumeration.
+    """
+    name = tool_name.lower().strip()
+
+    # Explicit non-write tools
+    if name in _WRITE_EXCLUSIONS:
+        return False
+
+    # If it starts with any read prefix → not a write
+    for prefix in _READ_PREFIXES:
+        if name.startswith(prefix):
+            return False
+
+    # Everything else is a write
+    return True
 
 
-# ── Read-back inference ──────────────────────────────────────────────────────
+# ── Read-back inference (smart noun extraction) ──────────────────────────────
+#
+# Instead of a hardcoded write→read override table (which assumes we know tool
+# names at development time), we strip the write verb from the tool name to
+# extract the entity noun, then construct read candidates from that noun.
+#
+# This works for dynamic FSM/MCP tool names generated at runtime.
 
-# Map write verb → corresponding read verb to verify the write.
-_WRITE_TO_READ_VERB: dict[str, str] = {
-    "update": "get",
-    "create": "get",
-    "insert": "get",
-    "approve": "get",
-    "reject": "get",
-    "close": "get",
-    "open": "get",
-    "process": "get",
-    "submit": "get",
-    "record": "get",
-    "add": "get",
-    "assign": "get",
-    "revoke": "get",
-    "mark": "get",
-    "flag": "get",
-    "complete": "get",
-    "resolve": "get",
-    "apply": "get",
-    "transfer": "get",
-    "disburse": "get",
-    "pay": "get",
-    "charge": "get",
-    "refund": "get",
-    "credit": "get",
-    "debit": "get",
-    "book": "get",
-    "lock": "get",
-    "enable": "get",
-    "disable": "get",
-    # Business-process mutation verbs
-    "modify": "get",
-    "adjust": "get",
-    "void": "get",
-    "reverse": "get",
-    "amend": "get",
-    "patch": "get",
-    # Additional write verb → read verb mappings
-    "replace": "get",
-    "upsert": "get",
-    "merge": "get",
-    "acknowledge": "get",
-    "activate": "get",
-    "deactivate": "get",
-    "link": "get",
-    "unlink": "get",
-    "release": "get",
-    "hold": "get",
-    "authorize": "get",
-    "confirm": "get",
-    "extend": "get",
-    "renew": "get",
-}
+# Ordered longest-first so longer prefixes match before shorter ones
+# (e.g. "process_payment_" before "process_", "modify_order_" before "modify_")
+_WRITE_VERB_PREFIXES_ORDERED: list[str] = [
+    # Single-word verb prefixes (alphabetical within group)
+    # NOTE: Do NOT add compound prefixes like 'modify_order_' here — they over-strip
+    # the entity noun. Single-word prefixes (modify_, process_) give better extraction.
+    "acknowledge_",
+    "activate_",
+    "add_",
+    "adjust_",
+    "amend_",
+    "apply_",
+    "approve_",
+    "archive_",
+    "assign_",
+    "authorize_",
+    "blacklist_",
+    "book_",
+    "cancel_",
+    "certify_",
+    "charge_",
+    "close_",
+    "commit_",
+    "complete_",
+    "confirm_",
+    "create_",
+    "credit_",
+    "deactivate_",
+    "debit_",
+    "delete_",
+    "demote_",
+    "deprovision_",
+    "disable_",
+    "disburse_",
+    "dispatch_",
+    "disenroll_",
+    "draft_",
+    "enable_",
+    "enroll_",
+    "escalate_",
+    "execute_",
+    "extend_",
+    "finalize_",
+    "flag_",
+    "forward_",
+    "grant_",
+    "hold_",
+    "insert_",
+    "invalidate_",
+    "issue_",
+    "link_",
+    "lock_",
+    "lodge_",
+    "mark_",
+    "merge_",
+    "migrate_",
+    "modify_",
+    "notify_",
+    "offboard_",
+    "onboard_",
+    "open_",
+    "override_",
+    "patch_",
+    "pay_",
+    "post_",
+    "process_",
+    "promote_",
+    "provision_",
+    "publish_",
+    "raise_",
+    "reassign_",
+    "record_",
+    "refund_",
+    "reject_",
+    "release_",
+    "remediate_",
+    "remove_",
+    "renew_",
+    "reopen_",
+    "replace_",
+    "resolve_",
+    "restore_",
+    "reverse_",
+    "revoke_",
+    "rotate_",
+    "schedule_",
+    "send_",
+    "set_",
+    "split_",
+    "submit_",
+    "suspend_",
+    "tag_",
+    "terminate_",
+    "transfer_",
+    "trigger_",
+    "unlock_",
+    "unlink_",
+    "unassign_",
+    "update_",
+    "upsert_",
+    "void_",
+    "whitelist_",
+]
 
 
-# Override table: known write→read pairs where inference would get the wrong name
-_WRITE_TO_READ_OVERRIDE: dict[str, str] = {
-    "modify_order_items":           "get_order",
-    "process_payment_adjustment":   "get_payment_adjustment",
-    "update_order_items":           "get_order",
-    "cancel_order":                 "get_order",
-    "create_order":                 "get_order",
-    "approve_invoice":              "get_invoice",
-    "reject_invoice":               "get_invoice",
-    "update_invoice":               "get_invoice",
-    "process_refund":               "get_refund",
-    "apply_credit":                 "get_credit",
-    "void_invoice":                 "get_invoice",
-    "close_ticket":                 "get_ticket",
-    "resolve_ticket":               "get_ticket",
-    "assign_ticket":                "get_ticket",
-}
+def _extract_entity_noun(write_tool: str) -> str:
+    """
+    Extract the entity noun from a write tool name by stripping the verb prefix.
+
+    Examples:
+      modify_order_items       → order_items
+      approve_invoice          → invoice
+      process_payment_adj      → adj   (after stripping "process_payment_")
+      escalate_ticket          → ticket
+      close_case               → case
+      transfer_funds           → funds
+    """
+    name = write_tool.lower()
+    for prefix in _WRITE_VERB_PREFIXES_ORDERED:
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    # Fallback: strip the first underscore-delimited word
+    parts = name.split("_", 1)
+    return parts[1] if len(parts) > 1 else name
 
 
 def _infer_read_tool(write_tool: str) -> str | None:
     """
-    Infer the corresponding read tool from a write tool name.
+    Infer the primary read tool for WAL checkpoint read-back.
+
+    Uses smart noun extraction — no hardcoded tool-name pairs needed.
+    Returns the highest-probability read candidate; _try_alt_reads() covers
+    the rest of the candidates list.
+
     Examples:
-      update_account_balance  → get_account_balance  OR  get_account
-      approve_invoice         → get_invoice
-      create_order            → get_order
-      revoke_access           → get_access  OR  check_access
+      modify_order_items       → get_order_items
+      approve_invoice          → get_invoice
+      process_payment_adj      → get_payment_adj
+      escalate_ticket          → get_ticket
+      close_case               → get_case
+      transfer_funds           → get_funds
     """
-    # Check override table first (known pairs where inference gets it wrong)
-    if write_tool in _WRITE_TO_READ_OVERRIDE:
-        return _WRITE_TO_READ_OVERRIDE[write_tool]
-
-    parts = write_tool.split("_")
-    if not parts:
+    entity = _extract_entity_noun(write_tool)
+    if not entity:
         return None
 
-    write_verb = parts[0].lower()
-    read_verb = _WRITE_TO_READ_VERB.get(write_verb, "get")
-    noun = "_".join(parts[1:])
+    # Primary candidate: get_{entity}
+    return f"get_{entity}"
 
-    if not noun:
-        return None
 
-    # Primary candidate: get_{noun}
-    return f"{read_verb}_{noun}"
+def _infer_alt_reads(write_tool: str) -> list[str]:
+    """
+    Return the full ordered list of read candidates for a write tool.
+    Used by _try_alt_reads() when the primary candidate fails.
+    """
+    entity = _extract_entity_noun(write_tool)
+    if not entity:
+        return []
+
+    candidates = [
+        f"get_{entity}",
+        f"get_{entity}s",
+        f"list_{entity}s",
+        f"list_{entity}",
+        f"fetch_{entity}",
+        f"retrieve_{entity}",
+        f"check_{entity}",
+        f"read_{entity}",
+    ]
+    # Also try singularizing if entity ends in 's'
+    if entity.endswith("s"):
+        singular = entity[:-1]
+        candidates.extend([f"get_{singular}", f"fetch_{singular}", f"list_{singular}s"])
+
+    # Try root noun (first component) as fallback, e.g. order_items → order
+    root = entity.split("_")[0]
+    if root != entity:
+        candidates.extend([f"get_{root}", f"list_{root}s"])
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    return unique
 
 
 def _extract_key_params(params: dict) -> dict:
@@ -276,20 +369,9 @@ class MutationVerifier:
 
     async def _try_alt_reads(self, write_tool: str, key_params: dict) -> dict | None:
         """Try alternative read tool names when the primary inference fails."""
-        parts = write_tool.split("_")
-        noun = "_".join(parts[1:]) if len(parts) > 1 else ""
-        if not noun:
-            return None
-
-        # Try: list_{noun}s, check_{noun}, fetch_{noun}, read_{noun}
-        alt_tools = [
-            f"list_{noun}s",
-            f"check_{noun}",
-            f"fetch_{noun}",
-            f"read_{noun}",
-            f"get_{noun.split('_')[0]}",   # e.g., get_account from update_account_balance
-        ]
-        for alt in alt_tools:
+        alt_tools = _infer_alt_reads(write_tool)
+        # Skip index 0 — that's the primary candidate already tried by caller
+        for alt in alt_tools[1:]:
             try:
                 r = await self._inner(alt, key_params)
                 if isinstance(r, dict) and "error" not in r:
@@ -321,13 +403,13 @@ class MutationVerifier:
 
         for i, m in enumerate(self._mutations, 1):
             status = (
-                "✓ VERIFIED" if m["verified"] is True
-                else "✗ FAILED" if m["verified"] is False
-                else "~ UNVERIFIABLE"
+                "VERIFIED" if m["verified"] is True
+                else "FAILED" if m["verified"] is False
+                else "UNVERIFIABLE"
             )
             lines.append(
                 f"{i}. [{status}] {m['tool']}({m['params_summary']}) "
-                f"→ {m['write_result']}"
+                f"-> {m['write_result']}"
             )
             if m["read_back"]:
                 lines.append(f"   Read-back: {m['read_back']}")
