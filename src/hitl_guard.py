@@ -45,10 +45,11 @@ def classify_tool(tool_name: str) -> str:
     mutate = changes state — BLOCKED at APPROVAL_GATE
     """
     name = tool_name.lower()
-    if any(name.startswith(p) for p in _READ_PREFIXES):
-        return "read"
+    # Check compute FIRST (higher priority than general read prefixes)
     if name.startswith("calculate_") or name.startswith("compute_") or name.startswith("estimate_"):
         return "compute"
+    if any(name.startswith(p) for p in _READ_PREFIXES):
+        return "read"
     if any(name.startswith(p) for p in _MUTATE_PREFIXES):
         return "mutate"
     if any(kw in name for kw in _MUTATE_KEYWORDS):
