@@ -24,7 +24,7 @@ import json
 import asyncio
 
 from src.brainos_client import run_task, BrainOSUnavailableError
-from src.fallback_solver import solve_with_claude
+from src.claude_executor import solve_with_claude
 from src.mcp_bridge import discover_tools, call_tool
 from src.policy_checker import evaluate_policy_rules
 from src.structured_output import build_policy_section, format_final_answer
@@ -263,7 +263,7 @@ class MiniAIWorker:
 
     async def _execute(self, task_text: str, context: dict) -> tuple[str, int, str | None]:
         """
-        Run the task through BrainOS → Claude fallback.
+        Run the task through the 8-state FSM with Claude as the execution engine.
         Mirrors BrainOS cognitive-planner.ts EXECUTE phase.
         """
         fsm = context["fsm"]
@@ -420,7 +420,7 @@ class MiniAIWorker:
                 except Exception:
                     pass
 
-        # Wave 10: MoA synthesis — dual top_p for pure-reasoning tasks on fallback path.
+        # Wave 10: MoA synthesis — dual top_p for pure-reasoning tasks.
         # Skip if: BrainOS handled it (already synthesized), tools were used (data-dependent),
         # or budget is exhausted.
         if (answer and not error and not _brainos_handled

@@ -4,7 +4,7 @@ import time
 from typing import Callable, Awaitable
 
 from src.brainos_client import run_task, BrainOSUnavailableError
-from src.fallback_solver import solve_with_claude
+from src.claude_executor import solve_with_claude
 from src.mcp_bridge import discover_tools, call_tool
 from src.policy_checker import evaluate_policy_rules
 from src.structured_output import build_policy_section

@@ -22,7 +22,7 @@ async def solve_with_claude(
     original_task_text: str = "",
 ) -> tuple[str, int]:
     """
-    Direct Claude SDK fallback. Returns (answer, tool_count).
+    Primary Claude execution engine. Returns (answer, tool_count).
     model + max_tokens are set by TokenBudget — Haiku at >80% usage, Sonnet otherwise.
     tool_count fed into RL quality scoring.
 
