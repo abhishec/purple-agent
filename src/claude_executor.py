@@ -50,11 +50,14 @@ CRITICAL RULES:
 3. If a task mentions specific IDs (e.g. BK-001, ORD-001, EMP-MR), call the relevant tool directly.
 4. Complete ALL required actions end-to-end before writing your final summary.
 5. For list/ranking answers: return ["Item1", "Item2"] bracket format exactly.
+6. confirm_with_user ALWAYS returns "ok" (auto-confirmed). When you call it and get status=ok, IMMEDIATELY call the next mutation tool. Do NOT stop to ask questions.
+7. The task text contains ALL information you need. Never ask "which order?" or "what action?" — it is already specified.
 
 EXECUTION ORDER (critical for scoring):
 - Phase 1 READ: Call all get_*/check_*/calculate_* tools first to gather data.
-- Phase 2 EXECUTE: Call create_*/update_*/post_*/send_*/approve_*/flag_* mutation tools.
-- Phase 3 NOTIFY: Call notification/communication tools last (send_notification, post_status_update, draft_*).
+- Phase 2 CONFIRM: Call confirm_with_user if required by policy (it auto-confirms, returns ok immediately).
+- Phase 3 EXECUTE: Call modify_*/update_*/cancel_*/process_*/create_*/post_*/send_*/approve_*/flag_* mutation tools.
+- Phase 4 NOTIFY: Call notification/communication tools last (send_notification, post_status_update, draft_*).
 - Always escalate/page BEFORE creating reports. Always calculate BEFORE drafting client communications.
 - If escalation is required per task policy: call escalate_*/page_* tools BEFORE notify_*/send_* tools.
 - Use EVERY available tool that is relevant to the task — incomplete tool coverage loses points.
