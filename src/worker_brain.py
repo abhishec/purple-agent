@@ -36,7 +36,7 @@ from src.session_context import (
 )
 from src.fsm_runner import FSMRunner
 from src.privacy_guard import check_privacy
-from src.token_budget import TokenBudget, format_competition_answer
+from src.token_budget import TokenBudget, format_competition_answer, MODELS
 from src.schema_adapter import resilient_tool_call
 from src.hitl_guard import check_approval_gate          # Gap 1
 from src.paginated_tools import paginated_fetch          # Gap 2
@@ -297,7 +297,9 @@ class MiniAIWorker:
 
         add_turn(self.session_id, "user", task_text)
 
-        model = self.budget.get_model(fsm.current_state.value, task_text)
+        # Wave 24: primary execution always Sonnet unless budget >80% (Haiku can't handle complex tasks)
+        _exec_model = self.budget.get_model(fsm.current_state.value, task_text)
+        model = _exec_model if self.budget.pct >= 0.80 else MODELS["sonnet"]
         max_tokens = self.budget.get_max_tokens(fsm.current_state.value)
 
         # Schema-resilient tool call wrapper (Gap 2 + schema_adapter combined)
