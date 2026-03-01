@@ -237,7 +237,11 @@ async def resilient_tool_call(
     """
     result = await on_tool_call(tool_name, params)
     error_text = str(result.get("error", "")) if isinstance(result, dict) else str(result)
-    has_error = bool(error_text) and "error" in error_text.lower()
+    # has_error: True whenever the "error" key is present and non-empty.
+    # The old check (`"error" in error_text.lower()`) falsely skipped correction
+    # for messages like "column 'foo' not found" or "no such column: foo"
+    # that don't contain the word "error" in the value itself.
+    has_error = bool(error_text)
 
     if has_error:
         # Standard error correction path
