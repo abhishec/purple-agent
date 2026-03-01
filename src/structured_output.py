@@ -24,10 +24,40 @@ SCALAR_TASK_KEYWORDS = [
     "can i", "am i allowed", "does this", "is it", "was it",
 ]
 
+# Quantity patterns that signal list output regardless of "list" keyword.
+# Covers novel phrasings like "Give me the three highest-risk vendors" or
+# "Which invoices exceed the approved amount".
+_QUANTITY_LIST_PATTERNS = [
+    re.compile(r'\b(top|best|worst|highest|lowest|first|last)\s+\d+\b', re.I),
+    re.compile(
+        r'\b\d+\s+(vendors?|invoices?|items?|orders?|employees?|records?|cases?|'
+        r'tickets?|candidates?|options?|risks?|issues?)\b',
+        re.I,
+    ),
+    re.compile(
+        r'\b(all|every|each)\s+(vendors?|invoices?|items?|orders?|employees?|records?)\b',
+        re.I,
+    ),
+    re.compile(r'\bwhich\s+\w+\s+(are|have|should|need|exceed|violate|qualify)\b', re.I),
+    re.compile(r'\b(list|enumerate|identify all|show me all|find all|give me)\b', re.I),
+]
+
+
+def _is_list_task_dynamic(task_text: str) -> bool:
+    """Dynamic list task detection — works for novel phrasings."""
+    task_lower = task_text.lower()
+    # Original keyword check (fast path)
+    if any(kw in task_lower for kw in LIST_TASK_KEYWORDS):
+        return True
+    # Quantity signal — novel phrasing
+    for pattern in _QUANTITY_LIST_PATTERNS:
+        if pattern.search(task_text):
+            return True
+    return False
+
 
 def is_list_task(task_text: str) -> bool:
-    text = task_text.lower()
-    return any(kw in text for kw in LIST_TASK_KEYWORDS)
+    return _is_list_task_dynamic(task_text)
 
 
 def is_scalar_task(task_text: str) -> bool:
@@ -91,11 +121,14 @@ def enforce_bracket_format(items: list[str]) -> str:
     return json.dumps(clean, ensure_ascii=False)
 
 
-def format_final_answer(answer: str, policy_result: dict | None = None) -> str:
+def format_final_answer(answer: str, task_text: str = "", policy_result: dict | None = None) -> str:
     """
     Post-process the final answer:
     1. Prepend policy outcome if failed (prose answers only — never corrupt bracket format)
     2. Try to detect and enforce bracket format for list answers
+    3. Post-hoc correction: if the answer contains a parseable JSON array but task was
+       not originally classified as a list task, still enforce bracket format — the
+       answer itself is ground truth.
     """
     answer_stripped = answer.strip()
 
@@ -115,6 +148,10 @@ def format_final_answer(answer: str, policy_result: dict | None = None) -> str:
     if items:
         bracket = enforce_bracket_format(items)
         parts.append(bracket)
+    elif task_text and _is_list_task_dynamic(task_text):
+        # Task was classified as a list task but LLM returned prose — still pass through
+        # so the caller can decide to re-prompt.  We don't corrupt a valid prose answer.
+        parts.append(answer_stripped)
     else:
         parts.append(answer_stripped)
 

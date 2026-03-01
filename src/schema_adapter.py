@@ -47,6 +47,44 @@ SCHEMA_ERROR_PATTERNS = [
 # Keys whose empty value signals a filtered-but-drifted query (Fix A)
 _EMPTY_RESULT_KEYS = ("data", "items", "records", "results", "rows", "list")
 
+# Signal words that identify schema introspection tools when scanning the available
+# tool list dynamically.  Any tool whose name contains one of these substrings is
+# considered a schema tool candidate.
+_SCHEMA_TOOL_SIGNALS = [
+    "schema", "column", "describe", "inspect", "metadata", "structure", "table_info",
+]
+
+# Hard-coded fallback names — always tried even when not in the available tools list,
+# so existing behaviour is preserved when no tool list is supplied.
+_KNOWN_SCHEMA_TOOLS = ["describe_table", "get_schema", "list_columns", "schema_introspect"]
+
+
+def _find_schema_tools(available_tools: list[str]) -> list[str]:
+    """
+    Return an ordered list of schema introspection tool names to try.
+
+    Strategy:
+      1. Scan ``available_tools`` for names containing any of ``_SCHEMA_TOOL_SIGNALS``.
+      2. Append the 4 known fallback names so they are always attempted, even if the
+         live tool list is empty or does not include them.
+
+    Callers should try tools in the returned order and stop on the first success.
+    """
+    found: list[str] = []
+    for tool_name in available_tools:
+        name_lower = tool_name.lower()
+        if any(signal in name_lower for signal in _SCHEMA_TOOL_SIGNALS):
+            if tool_name not in found:
+                found.append(tool_name)
+
+    # Always append the known fallback names so we never regress on envs where the
+    # tool list is unavailable.
+    for kt in _KNOWN_SCHEMA_TOOLS:
+        if kt not in found:
+            found.append(kt)
+
+    return found
+
 
 def _result_is_empty_due_to_drift(result: dict) -> bool:
     """
@@ -160,10 +198,15 @@ async def _attempt_schema_correction(
     error_text: str,
     on_tool_call: Callable[[str, dict], Awaitable[dict]],
     schema_cache: dict,
+    available_tool_names: list[str] | None = None,
 ) -> dict | None:
     """
     Core correction logic: introspect schema, fuzzy-match the bad column,
     retry with corrected params. Returns corrected result or None if unable.
+
+    ``available_tool_names`` — names of tools available in the current environment.
+    When supplied, schema tool discovery is dynamic (see ``_find_schema_tools``).
+    When omitted, falls back to the 4 hard-coded names (no regression).
     """
     bad_col = detect_schema_error(error_text) if error_text else None
 
@@ -183,10 +226,11 @@ async def _attempt_schema_correction(
     if not cols_to_try:
         return None
 
-    # Introspect schema once
+    # Introspect schema once — try tools in dynamically-discovered order
     table = params.get("table") or params.get("table_name") or params.get("resource", "")
     schema_result = None
-    for schema_tool in ["describe_table", "get_schema", "list_columns", "schema_introspect"]:
+    schema_tools = _find_schema_tools(available_tool_names or [])
+    for schema_tool in schema_tools:
         try:
             r = await on_tool_call(schema_tool, {"table": table} if table else {})
             if not (isinstance(r, dict) and "error" in r):
@@ -227,6 +271,7 @@ async def resilient_tool_call(
     params: dict,
     on_tool_call: Callable[[str, dict], Awaitable[dict]],
     schema_cache: dict,
+    available_tool_names: list[str] | None = None,
 ) -> dict:
     """
     Wrapper around on_tool_call with schema drift retry.
@@ -234,6 +279,12 @@ async def resilient_tool_call(
     Error path: if call fails with a column error → introspect → fuzzy-match → retry.
     Empty result path (Fix A): if call succeeds but returns empty collection
     → also attempt column correction (filter may reference a drifted column name).
+
+    ``available_tool_names`` — optional list of tool names available in the current
+    environment.  When provided, schema introspection tool discovery is dynamic
+    (non-standard names like ``inspect_table`` or ``table_metadata`` are found
+    automatically).  When omitted the 4 known fallback names are used (same
+    behaviour as the previous hard-coded implementation).
     """
     result = await on_tool_call(tool_name, params)
     error_text = str(result.get("error", "")) if isinstance(result, dict) else str(result)
@@ -246,7 +297,8 @@ async def resilient_tool_call(
     if has_error:
         # Standard error correction path
         corrected = await _attempt_schema_correction(
-            tool_name, params, error_text, on_tool_call, schema_cache
+            tool_name, params, error_text, on_tool_call, schema_cache,
+            available_tool_names=available_tool_names,
         )
         if corrected is not None:
             return corrected
@@ -255,7 +307,8 @@ async def resilient_tool_call(
     # Fix A: empty result path — may indicate column filter drift
     if _result_is_empty_due_to_drift(result):
         corrected = await _attempt_schema_correction(
-            tool_name, params, "", on_tool_call, schema_cache
+            tool_name, params, "", on_tool_call, schema_cache,
+            available_tool_names=available_tool_names,
         )
         if corrected is not None and not _result_is_empty_due_to_drift(corrected):
             return corrected
