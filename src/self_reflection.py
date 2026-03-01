@@ -41,13 +41,15 @@ async def reflect_on_answer(
       {score: float, complete: bool, missing: list[str], improve_prompt: str}
     Fire-and-forget safe — on any failure returns {score: 0.8, complete: True}.
     """
-    if not REFLECTION_ENABLED or not ANTHROPIC_API_KEY:
-        return {"score": 0.8, "complete": True, "missing": [], "improve_prompt": ""}
-
     # Bracket-format = exact_match target — valid by definition, never improve.
     # Haiku would score '["INV-001"]' as "incomplete" triggering a corruption pass.
+    # This check must come BEFORE the API-key check so bracket answers always get
+    # score=1.0 even when the API key is missing (e.g. in test environments).
     if answer.strip().startswith('['):
         return {"score": 1.0, "complete": True, "missing": [], "improve_prompt": ""}
+
+    if not REFLECTION_ENABLED or not ANTHROPIC_API_KEY:
+        return {"score": 0.8, "complete": True, "missing": [], "improve_prompt": ""}
 
     # Fast heuristic pre-check — skip Haiku if clearly good
     heuristic = _heuristic_score(answer, task_text, tool_count)
