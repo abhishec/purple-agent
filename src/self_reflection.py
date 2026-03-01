@@ -22,6 +22,37 @@ import re
 from src.config import ANTHROPIC_API_KEY
 from src.token_budget import _is_bracket_format
 
+
+import re as _re
+
+
+def _has_structured_completion(answer: str) -> bool:
+    """True if answer contains any field:value completion signal — domain-agnostic."""
+    # Pattern 1: explicit field:value pairs (catches Risk rating:, Decision:, Total:, etc.)
+    field_value_pattern = _re.compile(
+        r'^[A-Za-z][A-Za-z\s_]{1,30}:\s*.{3,}',  # "Field name: value"
+        _re.MULTILINE
+    )
+    if field_value_pattern.search(answer):
+        return True
+
+    # Pattern 2: expanded completion markers (original + domain-specific additions)
+    _COMPLETION_MARKERS = {
+        # Original
+        "approved", "rejected", "completed", "total:", "amount:", "decision:",
+        # Financial
+        "credit:", "debit:", "balance:", "variance:", "penalty:", "refund:",
+        # Risk/compliance
+        "risk:", "rating:", "score:", "level:", "finding:",
+        # Status/resolution
+        "status:", "resolved:", "closed:", "escalated:", "flagged:",
+        "processed:", "authorized:", "denied:", "blocked:",
+        # Action
+        "recommendation:", "action:", "next step:", "outcome:",
+    }
+    answer_lower = answer.lower()
+    return any(m in answer_lower for m in _COMPLETION_MARKERS)
+
 REFLECTION_MODEL = "claude-haiku-4-5-20251001"
 REFLECTION_TIMEOUT = 8.0
 IMPROVE_THRESHOLD = 0.65     # reflect + improve if score below this
@@ -99,7 +130,7 @@ def _heuristic_score(answer: str, task_text: str, tool_count: int) -> float:
 
     # Structure signals — reward JSON/structured content
     if "{" in answer and "}" in answer:  score += 0.08
-    if any(marker in answer.lower() for marker in ["approved", "rejected", "completed", "total:", "amount:", "decision:"]):
+    if _has_structured_completion(answer):
         score += 0.08
 
     # Penalty: error phrases

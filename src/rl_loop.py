@@ -75,6 +75,35 @@ def _extract_keywords(text: str) -> list[str]:
     return unique[:15]
 
 
+
+def _has_structured_completion(answer: str) -> bool:
+    """True if answer contains any field:value completion signal — domain-agnostic."""
+    # Pattern 1: explicit field:value pairs (catches Risk rating:, Decision:, Total:, etc.)
+    field_value_pattern = re.compile(
+        r'^[A-Za-z][A-Za-z\s_]{1,30}:\s*.{3,}',  # "Field name: value"
+        re.MULTILINE
+    )
+    if field_value_pattern.search(answer):
+        return True
+
+    # Pattern 2: expanded completion markers (original + domain-specific additions)
+    _COMPLETION_MARKERS = {
+        # Original
+        "approved", "rejected", "completed", "total:", "amount:", "decision:",
+        # Financial
+        "credit:", "debit:", "balance:", "variance:", "penalty:", "refund:",
+        # Risk/compliance
+        "risk:", "rating:", "score:", "level:", "finding:",
+        # Status/resolution
+        "status:", "resolved:", "closed:", "escalated:", "flagged:",
+        "processed:", "authorized:", "denied:", "blocked:",
+        # Action
+        "recommendation:", "action:", "next step:", "outcome:",
+    }
+    answer_lower = answer.lower()
+    return any(m in answer_lower for m in _COMPLETION_MARKERS)
+
+
 def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> float:
     """
     Quality score 0–1. Ported from BrainOS computeAgentQuality().
@@ -125,7 +154,7 @@ def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> f
     if re.search(r'"results"\s*:\s*\[\s*\]', answer): score -= 0.15
 
     # Structure reward
-    if any(m in answer.lower() for m in ["approved", "rejected", "completed", "decision:", "total:"]):
+    if _has_structured_completion(answer):
         score += 0.08
     if "{" in answer and "}" in answer:
         score += 0.05
@@ -141,7 +170,7 @@ def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> f
 
 # ── Structured memory extraction (pure string, zero API cost) ─────────────────
 
-def _extract_success_pattern(task_text: str, answer: str) -> str:
+def _extract_success_pattern(task_text: str, answer: str, domain: str = "") -> str:
     """
     Extract a concise success pattern description from task + answer.
     No API calls — pure string analysis.
@@ -156,15 +185,10 @@ def _extract_success_pattern(task_text: str, answer: str) -> str:
     if tool_mentions > 0:
         parts.append(f"Used ~{tool_mentions} tool references")
 
-    # Extract process type keyword from task
-    process_kws = [
-        "expense", "procurement", "invoice", "offboarding", "sla", "order",
-        "compliance", "dispute", "collections", "month-end", "approval",
-    ]
-    for kw in process_kws:
-        if kw in task_text.lower():
-            parts.append(f"Process: {kw}")
-            break
+    # Use domain directly — it's the authoritative process type, already classified
+    process_label = f"Process: {domain}" if domain else ""
+    if process_label:
+        parts.append(process_label)
 
     # Extract dollar amount if present
     amount_m = re.search(r'\$[\d,]+(?:\.\d{2})?', answer)
@@ -252,7 +276,7 @@ def extract_structured_memory(task_text: str, answer: str, domain: str, quality:
     enriching the RL primer injected before future similar tasks.
     """
     if quality >= 0.6:
-        what_worked = _extract_success_pattern(task_text, answer)
+        what_worked = _extract_success_pattern(task_text, answer, domain)
         _update_case_entry_metadata(domain, what_worked=what_worked)
     else:
         what_failed = _extract_failure_pattern(task_text, answer)
