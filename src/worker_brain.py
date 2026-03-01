@@ -121,22 +121,11 @@ class MiniAIWorker:
                         # price → unit_price
                         if "price" in norm and "unit_price" not in norm:
                             norm["unit_price"] = norm.pop("price")
-                        # variant dict → variant_id (extract id from nested dict)
-                        if "variant" in norm and isinstance(norm["variant"], dict):
-                            norm["variant_id"] = norm["variant"].get("id", norm["variant"])
-                            del norm["variant"]
+                        # NOTE: variant dict is preserved as-is — green agent expects dict, not variant_id
                         normalized.append(norm)
                     else:
                         normalized.append(item)
                 params["modifications"] = normalized
-
-        # process_payment_adjustment: Claude sends direction/destination,
-        # implementation expects target_id/target_type
-        if tool_name == "process_payment_adjustment":
-            if "direction" in params and "target_id" not in params:
-                params["target_id"] = params.pop("direction")
-            if "destination" in params and "target_type" not in params:
-                params["target_type"] = params.pop("destination")
 
         # Generic item_id → id for any write-verb tool that receives item_id but not id
         _ITEM_ID_TOOLS = {"modify_", "update_", "cancel_", "remove_", "delete_", "create_", "add_", "process_"}
@@ -178,21 +167,6 @@ class MiniAIWorker:
                                 "description": "Unit price for this item",
                             }
                             del item_props["price"]
-                except (KeyError, TypeError):
-                    pass
-                patched.append(t)
-            elif name == "process_payment_adjustment":
-                t = copy.deepcopy(tool)
-                try:
-                    props = t["input_schema"]["properties"]
-                    # Fix direction → target_id
-                    if "direction" in props and "target_id" not in props:
-                        props["target_id"] = {"type": "string", "description": "Target entity ID for the payment adjustment"}
-                        del props["direction"]
-                    # Fix destination → target_type
-                    if "destination" in props and "target_type" not in props:
-                        props["target_type"] = {"type": "string", "description": "Target entity type (e.g. customer, account)"}
-                        del props["destination"]
                 except (KeyError, TypeError):
                     pass
                 patched.append(t)
