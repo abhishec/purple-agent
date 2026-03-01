@@ -39,11 +39,13 @@ _NUMBER_RE = re.compile(
     r'(?:[$£€¥]?\s*\d[\d,]*\.?\d*(?:\s*%)?)',
 )
 
-# Process types where COMPUTE verification adds value
-_COMPUTE_HEAVY = frozenset({
-    "invoice_reconciliation", "expense_approval", "payroll",
-    "month_end_close", "ar_collections", "sla_breach",
-    "procurement", "subscription_migration", "general",
+# Process types that NEVER need math verification — explicit exclusion list.
+# All other types proceed through verification whenever numbers are present.
+# This is the inverted-default pattern: safe by default, opt-out only.
+_COMPUTE_LIGHT = frozenset({
+    "notification_only",   # pure notification, no calculation
+    "status_inquiry",      # lookup only, no calculation
+    "document_retrieval",  # fetch only, no calculation
 })
 
 
@@ -75,14 +77,17 @@ async def verify_compute_output(
     if answer.strip().startswith('['):
         return ComputeVerifyResult(False, 0.95, [], "")
 
-    # Fast-path: no numeric content to verify
+    # Fast-path: explicit exclusion — provably calculation-free process types
+    if process_type in _COMPUTE_LIGHT:
+        return ComputeVerifyResult(False, 0.85, [], "")
+
+    # Fast-path: no numeric content to verify — number-presence drives verification,
+    # not process type. If there are no numbers there is no math to check.
     numbers = _extract_numbers(answer)
     if not numbers or len(answer) < 100:
         return ComputeVerifyResult(False, 0.85, [], "")
 
-    # Fast-path: process types that don't compute much
-    if process_type not in _COMPUTE_HEAVY and "compute" not in answer.lower():
-        return ComputeVerifyResult(False, 0.80, [], "")
+    # Proceed with verification for ALL other process types that contain numbers.
 
     system_prompt = """\
 You are a financial calculation auditor. Review computations in an agent's answer.

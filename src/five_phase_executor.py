@@ -45,14 +45,6 @@ _COMPLEX_TASK_LENGTH   = 200    # characters
 _COMPLEX_TOOL_COUNT    = 3      # previous tool calls
 _LOW_QUALITY_THRESHOLD = 0.65   # prior attempt score below this triggers 5-phase
 
-_COMPLEX_PROCESS_TYPES = frozenset({
-    "month_end_close",
-    "compliance_audit",
-    "payroll",
-    "subscription_migration",
-    "incident_response",
-})
-
 _MULTI_QUESTION_PATTERN = re.compile(r'[?]{1}.*[?]{1}', re.DOTALL)
 
 
@@ -405,7 +397,7 @@ async def should_use_five_phase(task_text: str, tool_count_so_far: int) -> bool:
     Returns True when ANY of the following heuristics fire:
     - Task text is longer than 200 characters (multi-part query)
     - Task contains multiple question marks (multiple sub-questions)
-    - A complex process type keyword is present in the task text
+    - A complexity keyword is found in the task text (open-ended, not a frozenset)
     - tool_count_so_far >= 3 (previous attempt already used heavy tooling)
 
     Does NOT use a Claude call — pure heuristic, zero cost.
@@ -418,18 +410,19 @@ async def should_use_five_phase(task_text: str, tool_count_so_far: int) -> bool:
     if _MULTI_QUESTION_PATTERN.search(task_text):
         return True
 
-    # Complex process type heuristic
+    # Keyword complexity heuristic — signal-based, open-ended list.
+    # Works for novel process types (supplier_onboarding, debt_restructuring, etc.)
+    # without requiring them to appear in a hardcoded frozenset.
     text_lower = task_text.lower()
-    complex_keywords = {
-        "month_end_close":   ["month-end", "month end", "financial close", "close the books"],
-        "compliance_audit":  ["compliance audit", "kyc", "sox", "regulatory audit", "gdpr audit"],
-        "payroll":           ["payroll", "pay run", "salary run", "wage processing"],
-        "subscription_migration": ["subscription migration", "plan migration", "mass upgrade"],
-        "incident_response": ["p1 incident", "p2 incident", "sev 1", "sev1", "major incident"],
-    }
-    for _ptype, keywords in complex_keywords.items():
-        if any(kw in text_lower for kw in keywords):
-            return True
+    complexity_keywords = [
+        "month-end", "month end", "financial close", "close the books",
+        "compliance audit", "kyc", "sox", "regulatory audit", "gdpr audit",
+        "payroll", "pay run", "salary run", "wage processing",
+        "subscription migration", "plan migration", "mass upgrade",
+        "p1 incident", "p2 incident", "sev 1", "sev1", "major incident",
+    ]
+    if any(kw in text_lower for kw in complexity_keywords):
+        return True
 
     # Tool saturation heuristic
     if tool_count_so_far >= _COMPLEX_TOOL_COUNT:
