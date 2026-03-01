@@ -1,22 +1,19 @@
-# Purple Agent — AI Worker for Business Processes
+# Purple Agent — Business Process AI Worker
 
-A structured AI worker that executes enterprise business processes through a three-phase cognitive loop: PRIME (context assembly), EXECUTE (FSM-driven action), and REFLECT (learning feedback). The architecture enforces correct operation ordering at the structural level — mutations cannot occur before data collection, and policy checks cannot be bypassed, because the state machine makes those tool classes unavailable at the wrong phase.
+Live endpoint: https://purple.agentbench.usebrainos.com  
+Built for the AgentBeats Sprint 1 competition (March 2–22, 2026). Apache 2.0.
 
 ---
 
 ## What It Is
 
-Business process automation fails at a small set of predictable failure modes: agents that write before they read, arithmetic that accumulates floating-point error, policy rules that get summarized rather than evaluated, and no memory of what worked on similar tasks last week. A flat agentic loop with a long system prompt addresses none of these structurally — it relies on the model obeying instructions it could plausibly ignore.
+Purple Agent is an AI worker that executes enterprise business processes end-to-end. It connects to an MCP tool server, operates a structured 8-state finite state machine, and compounds learning across tasks through five parallel feedback channels.
 
-Purple Agent replaces the flat loop with an 8-state finite state machine that makes incorrect ordering physically impossible. In the ASSESS state, mutation tools are absent from the tool schema. In the APPROVAL_GATE state, all write-capable tools are blocked at the prompt layer. The model cannot accidentally write before it reads because the write tools are not offered until the FSM reaches MUTATE.
-
-On top of the FSM sits a reinforcement loop. After each task, a quality score is computed from signals (tool depth, answer completeness, policy compliance, error phrase detection) and recorded to a case log. Before the next task, the top three keyword-relevant past cases are injected as a primer. After 20+ tasks of the same type, the agent has pattern context, a tuned UCB1 strategy bandit, a populated knowledge base, and pre-loaded tool registrations — it executes faster and makes fewer errors than it did on its first encounter with that process type.
-
-The mental model: each `session_id` corresponds to one `MiniAIWorker` instance. State persists across A2A turns — the FSM checkpoint, conversation history, and schema correction cache all survive between turns in the same session. A multi-turn HR offboarding task that pauses for human confirmation resumes exactly where it left off.
+The design premise: a flat agentic loop ("here are 130 tools, be careful") produces inconsistent results for multi-step processes with policy gates and database mutations. Purple Agent enforces ordering structurally — data collection before computation, computation before policy check, policy check before mutation — using an FSM whose state determines which tools are available at each step.
 
 ---
 
-## Architecture Overview
+## How It Works
 
 ```
                     ┌─────────────────────────────────────────────────┐
@@ -73,358 +70,281 @@ The mental model: each `session_id` corresponds to one `MiniAIWorker` instance. 
                     └─────────────────────────────────────────────────┘
 ```
 
----
+Three phases run for every task:
 
-## The Execution Pipeline
-
-### PRIME: Building Context Before Acting
-
-PRIME assembles the system prompt before Claude sees the task. Every step below runs before any LLM call that touches the task itself.
-
-**Step 1 — Privacy guard**
-Regex scan for PII patterns (SSNs, credit card numbers, passwords, API keys in the payload). If detected, the task is refused with a structured error and zero API cost. This runs before everything else.
-
-**Step 2 — RL primer**
-`build_rl_primer()` loads `case_log.json` and scores each entry by keyword overlap with the current task. The top-3 relevant past cases are formatted as: `"Past pattern: invoice tasks with variance >2% → escalate to APPROVAL_GATE"`. The primer is injected at the top of the system context. Bad entries are pruned first (quality < 0.35, age > 72h, repeated failure patterns with ≥50% keyword overlap).
-
-**Step 3 — Session context**
-If the session has prior turns, `get_context_prompt()` returns a Haiku-compressed summary (~200 tokens) of past conversation. This gives turn 2 the context of what was decided in turn 1 without replaying the full history.
-
-**Step 4 — FSM classification**
-`classify_process_type()` calls Haiku to classify the task into a process type (`invoice_reconciliation`, `expense_approval`, `hr_offboarding`, etc.). On Haiku timeout or error, a keyword fallback fires deterministically. The process type selects the FSM template.
-
-**Step 5 — Dynamic FSM synthesis**
-If the classified type is not among the 15 built-in templates, `synthesize_if_needed()` calls Haiku once to produce a custom state sequence and per-state instructions specific to the novel process type. The result is cached permanently to `synthesized_definitions.json`. Future tasks of the same novel type use the cache — Haiku is called exactly once per new process type, ever.
-
-**Step 6 — FSMRunner setup**
-`detect_task_complexity()` scans for read-only intent patterns (`what is`, `show me`, `list`, `find`) against action patterns (`approve`, `update`, `cancel`, `reconcile`). Pure query tasks collapse to a 3-state path (DECOMPOSE → ASSESS → COMPLETE), skipping COMPUTE, POLICY_CHECK, APPROVAL_GATE, and MUTATE entirely. Existing FSM checkpoints are restored from the session here.
-
-**Step 7 — Policy evaluation**
-If a `policy_doc` was provided (JSON with a `rules` array), `evaluate_policy_rules()` evaluates it deterministically — no LLM involved. Supports `&&`, `||`, `!`, numeric comparisons, string equality, and range checks. The result is formatted as a policy section and injected into the system context.
-
-**Step 8 — Tool discovery**
-`discover_tools()` fetches tool schemas from the MCP server. `load_registered_tools()` loads `tool_registry.json` for any previously synthesized tools that apply to this session. The combined tool list is passed to Claude.
-
-**Step 9 — Dynamic tool gap detection**
-Two-phase detection runs before EXECUTE:
-- Phase 1: 30+ regex patterns covering finance, HR, SLA, supply chain, tax, and risk domains. Zero API cost. Matches patterns like `FLSA overtime`, `sla_credit`, `variance_percent`, `proration`.
-- Phase 2: If Phase 1 finds nothing and the task is ≥100 characters, `detect_tool_gaps_llm()` calls Haiku to identify what computation is missing.
-If a gap is found, `synthesize_and_register()` generates a Python implementation via Haiku, runs it in a sandbox against auto-generated test cases, and on pass, persists it to `tool_registry.json`. All future tasks can use the tool — the synthesis cost is paid once.
-
-**Step 10 — HITL gate check**
-If the FSM is resuming from an APPROVAL_GATE checkpoint, `check_approval_gate()` injects `"MUTATION TOOLS ARE BLOCKED"` into the system prompt. This is belt-and-suspenders: the FSMRunner also withholds mutation tools from the schema at this state.
-
-**Step 11 — Knowledge and entity memory**
-`get_relevant_knowledge()` queries `knowledge_base.json` for domain facts and entity-specific history. `get_entity_context()` returns zero-cost regex-extracted context: known vendors, reference amounts, people, and IDs seen in past tasks. Both are injected into the system context.
-
-**Step 12 — Finance pre-computation**
-`build_finance_context()` extracts numbers from the task and pre-computes: variance percentage, SLA downtime minutes, proration amounts, and credit calculations. These values are injected as ground truth, reducing Claude's need to derive them from scratch. A context accuracy tracker monitors whether these pre-computed values have been drifting (if accuracy on the last 5 similar tasks drops below 40%, a drift warning replaces the value).
-
-**Step 13 — system_context assembly**
-All parts are joined in a fixed order: RL primer → session context → policy section → entity memory → knowledge facts → finance pre-computation → tool gap results → HITL gate status. This becomes the system prompt.
+| Phase | What it does |
+|---|---|
+| **PRIME** | Loads pruned RL patterns, entity memory, knowledge base, dynamic tools — all before Claude sees the task |
+| **EXECUTE** | UCB1 picks strategy → 8-state FSM → COMPUTE gate → Numeric MoA → Mutation verify |
+| **REFLECT** | Records outcome to RL + bandit, extracts knowledge, updates case log |
 
 ---
 
-### EXECUTE: FSM-Driven with UCB1 Strategy Learning
+## Complete Execution Flow
 
-**UCB1 strategy selection**
+### Layer 0 — Request Entry (`server.py`)
 
-For each process type, `select_strategy()` maintains a 3-arm bandit:
+Every request is JSON-RPC 2.0 `tasks/send`. The server validates the method, extracts `task_text`, `policy_doc`, `tools_endpoint`, and `session_id`, then hands off to `MiniAIWorker(session_id).run(...)`. Any unhandled exception returns a JSON-RPC error — never a 500 HTML page.
 
-| Arm | Use case |
-|-----|----------|
-| `fsm` | Structured processes with clear state transitions (default) |
-| `five_phase` | Complex multi-step tasks: PLAN → GATHER → SYNTHESIZE → ARTIFACT → INSIGHT |
-| `moa` | Pure-reasoning and numeric tasks: dual top_p Haiku consensus + optional Sonnet synthesis |
-
-UCB1 score: `Q(arm) + sqrt(2) * sqrt(ln(N) / n(arm))`
-
-Where Q is mean reward for this arm, N is total pulls across all arms for this process type, and n is pulls for this arm. On first visit to any process type, all n=0 so the bandit defaults to `fsm`. State persists to `strategy_bandit.json` across all tasks. The incremental mean update `Q_new = Q_old + (reward - Q_old) / n` avoids storing all historical rewards.
-
-**Tool call stack**
-
-Each tool call during EXECUTE passes through this stack, in order:
-
-1. `MutationVerifier` — detects write-verb prefixes (`update_`, `create_`, `approve_`, `delete_`, etc.). After each write, infers the corresponding read tool and calls it immediately. This forces WAL checkpoint in SQLite, making the mutation visible before the scorer reads the database.
-
-2. `RecoveryAgent` — if the tool call fails, tries: synonym lookup → task decomposition → Haiku advice on alternative approach → graceful degrade with explanation.
-
-3. `SchemaAdapter` — if the error is "column not found", runs `describe_table`, fuzzy-matches the intended column (difflib + known alias table + prefix matching), retries with the corrected name, and caches the correction in the session schema cache.
-
-4. `PaginatedTools` — if the tool is a bulk-data fetch, runs a cursor loop to collect all pages before returning.
-
-5. Direct call — either to a registered synthesized tool or to the MCP server via `call_tool()`.
-
-**8-state FSM execution**
-
-Each state has a fixed model assignment, explicit rules about permitted tool classes, and defined exit conditions:
-
-| State | Purpose | Default Model | Permitted Tools |
-|-------|---------|---------------|----------------|
-| DECOMPOSE | Classify task, enumerate data needs, identify entities | Haiku | Read-only |
-| ASSESS | Gather data via tool calls | Haiku | Read-only (mutations blocked) |
-| COMPUTE | Pure arithmetic from collected data — no tool calls | Sonnet | None (math only) |
-| POLICY_CHECK | Evaluate policy rules against computed values | Haiku | None (deterministic) |
-| APPROVAL_GATE | Produce approval document; wait for HITL | Haiku | All mutations blocked |
-| MUTATE | Write operations; each followed by immediate read-back | Sonnet | Write tools (always Sonnet — never downgraded) |
-| SCHEDULE_NOTIFY | Notifications, scheduling, audit log entries | Haiku | Notification tools |
-| COMPLETE | Summarize completed actions | Haiku | None |
-
-Error paths: ESCALATE (policy violation requiring human), FAILED (unrecoverable error).
-
-**Post-execution passes**
-
-After the main execution loop completes, in order:
-
-- Mutation verification log is appended to the answer text (LLM judge can score correct behavior even if a DB read fails)
-- COMPUTE math reflection: `verify_compute_output()` runs a Haiku audit of all arithmetic before MUTATE — catches decimal errors before they become wrong writes
-- Numeric MoA: `numeric_moa_synthesize()` runs dual top_p Haiku calls and checks word-overlap consensus on numeric results
-- Approval brief: if the task reached APPROVAL_GATE, `build_approval_brief()` generates a structured approval document
-- Output validation: checks for missing required fields and re-prompts if needed
-- Self-reflection: `reflect_on_answer()` scores the answer quality. If below 0.65, `build_improvement_prompt()` generates a targeted improvement pass. Bracket-format answers (`["INV-001", "INV-002"]` — confirmed by full JSON parse, not `startswith`) bypass reflection entirely.
-
-**Token budget and model selection**
-
-Each task gets a 10,000-token budget (4 chars/token). Two thresholds:
-- Above 80% used: all remaining calls switch to Haiku regardless of state
-- At 100%: skip remaining LLM calls entirely
-
-MUTATE always uses Sonnet and cannot be downgraded — an incorrect write is far worse than a slower one. COMPUTE uses Sonnet if the task contains complex analytical keywords (reconcile, root cause, diagnose, forecast, synthesize, correlate); otherwise Haiku. All other states default to Haiku. The efficiency hint in the system prompt scales with budget consumption: mild below 30%, strict below 60%, emergency above 80%.
+`session_id` is the worker's identity. The same session ID across turns means the same worker: same FSM checkpoint, same conversation memory, same entity context.
 
 ---
 
-### REFLECT: Compounding Learning Across Tasks
+### Layer 1 — PRIME Phase
 
-**FSM checkpoint**
-If the session is multi-turn and the FSM ended at APPROVAL_GATE (waiting for human), `save_fsm_checkpoint()` persists the current state, completed steps, and pending steps. The next turn restores this checkpoint and continues without re-running PRIME from scratch.
+Everything in PRIME runs before Claude sees the task. It assembles a `system_context` string that becomes the system prompt.
 
-**Session memory compression**
-`maybe_compress_async()` fires asynchronously after REFLECT. If the session has accumulated 20+ turns, Haiku compresses the full history to a ~200-token summary. This summary replaces the raw history in future turns' Step 3.
+**1. Privacy guard**  
+`privacy_guard.check_privacy()` — if the task contains PII, SSNs, or credentials, the worker refuses immediately. Zero API cost.
 
-**RL outcome recording**
-`record_outcome()` computes a quality score (0.0–1.0) from: tool usage depth, answer length and structure, presence of decision and completion markers, policy compliance, and penalties for error phrases and empty data arrays. Bracket-format exact-match answers always score 1.0. The `CaseEntry` is appended to `case_log.json` (max 200 entries, FIFO eviction).
+**2. RL primer**  
+`rl_loop.build_rl_primer(task_text)` loads `case_log.json`, finds the 3 most similar past tasks by keyword overlap, and injects patterns like:
+```
+Past pattern: invoice tasks with variance >2% → escalate to approval gate
+Past pattern: modify_order_items — confirm_with_user required first
+```
+Context rot pruning runs first: stale entries (>72h), low-quality entries (score <0.35 with failure), and repeated-failure patterns (3+ failures with ≥50% keyword overlap) are stripped before injection.
 
-**UCB1 bandit update**
-`bandit_record()` updates the arm that was selected this task: `Q_new = Q_old + (quality - Q_old) / n`. After enough tasks per process type, the bandit converges to the arm with the best mean reward.
+**3. Session context**  
+`session_context.get_context_prompt(session_id)` — for multi-turn sessions, loads Haiku-compressed conversation history (~200 token summary of prior turns).
 
-**Knowledge extraction**
-If quality ≥ 0.5, `extract_and_store()` calls Haiku to extract 1-2 reusable domain facts from the completed task. Examples: `"Acme Corp variance threshold is 2%, not 5%"`, `"INFRA-9 contract #CTR-441 uses 10% penalty per 0.1% downtime"`. These are stored to `knowledge_base.json` keyed by domain and entity and injected into future tasks.
+**4. FSM classification**  
+`smart_classifier.classify_process_type(task_text)` makes a Haiku call to identify the process type (`invoice_reconciliation`, `hr_offboarding`, `sla_breach`, etc.). If the session has a prior checkpoint, that is restored instead — no re-classification on turn 2+.
 
-**Entity memory update**
-`record_task_entities()` runs zero-cost regex extraction over the task and answer — vendors, reference IDs, amounts, people, dates, and products — and appends to the entity memory store. Future tasks involving the same entities get context without any API cost.
+**5. Dynamic FSM synthesis**  
+If the process type is not in the 15 built-in templates, `dynamic_fsm.synthesize_if_needed()` calls Haiku once to produce a custom state sequence and per-state instructions. The result is cached permanently — subsequent tasks of the same type skip synthesis entirely.
 
-**The compound effect**
-After 20+ tasks of the same process type: the bandit has converged to the best strategy, the case log has 20 patterns including what failed, the knowledge base has 10-40 domain facts, and tools are pre-loaded from the registry. A task that took 45 seconds on first encounter takes 18 seconds on encounter 20, with a measurably lower error rate.
+**6. FSMRunner**  
+Picks the state sequence from built-in templates or the synthesized definition. Read-only tasks (no action verbs detected) collapse to a 3-state path: DECOMPOSE → ASSESS → COMPLETE, skipping COMPUTE through SCHEDULE_NOTIFY.
+
+**7. Policy evaluation**  
+Parses `policy_doc` JSON and evaluates approval thresholds, spend limits, and escalation conditions deterministically — zero LLM calls.
+
+**8. Tool discovery**  
+`mcp_bridge.discover_tools()` fetches live tool schemas from the MCP endpoint. `load_registered_tools()` appends any tools synthesized in prior tasks from `tool_registry.json`.
+
+**9. Dynamic tool gap detection**  
+Two-phase detection covers business computations the MCP server doesn't provide:
+
+*Phase 1 (regex, zero API cost):* 36 static patterns across 10 domains:
+- Finance: NPV, IRR, WACC, amortization, depreciation, bond pricing
+- Monte Carlo simulation, Black-Scholes, Value at Risk, Newton-Raphson (IRR/yield)
+- HR/Payroll: FLSA overtime, proration, benefits cost, FTE/attrition rate
+- SLA/Operations: uptime percentage, SLA credits, penalty/liquidated damages
+- Supply Chain: EOQ, safety stock, FIFO/LIFO/weighted-average inventory
+- Date/Time: business day calculation, pro-rata periods, AR aging buckets
+- Statistics: z-score, weighted average, linear regression
+- Tax: VAT/GST add/extract/reverse, withholding, gross-up, capital allowances
+- Risk/Compliance: weighted risk score, AHP, Herfindahl concentration index
+- AR/Collections: bad debt provision (ECL), DSO, collection efficiency
+
+*Phase 2 (LLM, only if Phase 1 finds nothing AND task ≥ 100 chars):* Haiku identifies what custom calculations the task needs. Max 2 gaps detected, 8s timeout, never blocks execution.
+
+For each gap: Haiku synthesizes a Python implementation with 3 test cases, validates it in a restricted sandbox (`math`, `Decimal`, `random`, `statistics` — `import`, `open`, `os`, `sys` blocked), and persists it to `tool_registry.json`. It is available for all future tasks immediately.
+
+**10. HITL gate**  
+If the FSM is at `APPROVAL_GATE`, the prompt includes `"MUTATION TOOLS ARE BLOCKED"` explicitly — Claude cannot write even if it tries.
+
+**11. Knowledge base + entity memory**  
+`knowledge_extractor.get_relevant_knowledge()` retrieves domain facts extracted from past tasks (e.g., "Acme Corp net-30 payment terms").  
+`entity_extractor.get_entity_context()` injects cross-task entity history (e.g., "Acme Corp seen 3 times, last invoice $12,400").
+
+**12. Finance pre-computation**  
+`build_finance_context()` extracts numbers from the task text and computes variance percentages, SLA credits, and proration amounts — zero API cost, injected as ground truth to reduce arithmetic errors downstream.
+
+**13. system_context assembled**  
+All parts joined into the system prompt:
+```
+[worker header] [autonomy directive] [rl_primer] [knowledge] [entities]
+[finance facts] [phase_prompt] [policy_section] [hitl_prompt] [token efficiency hint]
+```
+
+---
+
+### Layer 2 — EXECUTE Phase
+
+**Tool call stack** (four layers, innermost to outermost):
+
+```
+Claude calls a tool
+        │
+        ▼
+MutationVerifier.call()          — records write calls; reads back after each write to flush SQLite WAL
+        │
+        ▼
+wrap_with_recovery()             — on error: tries synonym tool names, relaxed params
+        │
+        ▼
+resilient_tool_call()            — on "column not found": fuzzy-matches name, retries
+        │
+        ▼
+_raw_call() / PaginatedTools     — cursor-loops bulk data tools to collect all records
+        │
+        ▼
+_direct_call()
+        ├── registered tool? → execute locally (Decimal precision, zero MCP cost)
+        └── else → POST /mcp {tool, params, session_id} to green agent
+```
+
+**UCB1 strategy selection**  
+`strategy_bandit.select_strategy(process_type)` uses UCB1 to pick between three execution strategies:
+- `fsm` — 8-state FSM (default for unvisited process types)
+- `five_phase` — PLAN → GATHER → SYNTHESIZE → ARTIFACT → INSIGHT
+- `moa` — dual top_p Haiku calls with word-overlap consensus check, Sonnet synthesis if divergent
+
+UCB1 formula: `Q(arm) + √2 × √(ln(N) / n(arm))`. After enough tasks of the same type, the bandit converges to the best-performing strategy for that process class.
+
+**Post-execution passes** (all best-effort, none block the response):
+
+1. **Mutation verification log** — if any writes occurred, appends `## Mutation Verification Log` with per-write VERIFIED / FAILED / UNVERIFIABLE status
+2. **COMPUTE math reflection** — Haiku audits numeric answers for arithmetic errors before they become wrong mutations; triggers a correction pass if errors found
+3. **Numeric MoA** — for data-driven tasks (tool_count > 0): two parallel Haiku calls at different temperatures (verify + challenge), synthesizes the best result
+4. **Approval brief** — if APPROVAL_GATE fired and answer is thin (<200 chars), builds a formal approval document
+5. **Output validation** — checks required fields for the process type; re-runs with "add these missing fields" prompt if needed
+6. **Self-reflection** — scores answer on completeness, tool coverage, policy compliance; triggers an improvement pass if below threshold
+7. **MoA for pure reasoning** — for read-only tasks (tool_count == 0): dual top_p consensus check
+
+---
+
+### Layer 3 — REFLECT Phase
+
+```
+answer finalized
+        │
+        ├─→ session history updated
+        ├─→ FSM checkpoint saved (process_type, state_idx, state_history, requires_hitl)
+        ├─→ session memory compressed async (Haiku, fire-and-forget, >20 turns)
+        ├─→ rl_loop.record_outcome() → case_log.json (max 200 entries, FIFO)
+        ├─→ strategy_bandit.record_outcome() → UCB1 arm updated: Q_new = Q_old + (quality - Q_old) / n
+        ├─→ context_rl.check_context_accuracy() → adjusts confidence for pre-computed finance facts
+        ├─→ knowledge_extractor.extract_and_store() → 1-2 domain facts if quality ≥ 0.5
+        └─→ entity_extractor.record_task_entities() → vendors, amounts, people
+```
+
+**The compound effect:** Every task feeds five feedback channels simultaneously. After 20+ tasks of the same process type, the bandit has converged, the case log has domain patterns, the knowledge base has extracted facts, entities are recognized on first mention, and any synthesized math tools are pre-loaded. Task 50 measurably outperforms task 1 on the same process type.
 
 ---
 
 ## Real-World Examples
 
-### Case 1: Invoice Reconciliation with Variance Breach
+### 1. Invoice reconciliation with variance
 
-**Task:** `"Acme Corp submitted invoice INV-2024-447 for $52,340. PO-8821 was $51,200. Approve or reject per policy."`
+> *"Acme Corp submitted invoice INV-2024-447 for $52,340. The approved PO-8821 was $51,200. Approve or reject per policy."*
 
-**PRIME:**
-- RL primer finds 3 past Acme Corp entries: `"Past pattern: Acme variance >2% → escalate"`
-- Finance pre-computation extracts `52340` and `51200`, computes `variance = (52340 - 51200) / 51200 = 2.22%`
-- Policy evaluation loads threshold: `variance_percent > 2.0 → reject`
-- FSM classifies: `invoice_reconciliation` → full 8-state path
-
-**EXECUTE:**
-- DECOMPOSE: identifies entities `INV-2024-447`, `PO-8821`, `Acme Corp`
-- ASSESS: `get_invoice(INV-2024-447)` → `{amount: 52340, vendor: "Acme Corp"}`. `get_purchase_order(PO-8821)` → `{approved_amount: 51200}`
-- COMPUTE: decimal variance `Decimal("52340") - Decimal("51200") = Decimal("1140")`. `1140 / 51200 = 0.02226 = 2.23%`. Haiku math audit: passes.
-- POLICY_CHECK: `2.23% > 2.0%` → rule fires → outcome: `reject`
-- APPROVAL_GATE: mutation tools blocked. `build_approval_brief()` produces: `Rejection Brief — INV-2024-447. Variance: 2.23% (threshold: 2.00%). Acme Corp past pattern: consistent overages. Recommendation: reject and request revised invoice.`
-- FSM halts at APPROVAL_GATE. Task ends. No writes occur.
-
-**Key detail:** Claude cannot write the rejection to the database even if it tries — `reject_invoice()` is absent from the tool schema at APPROVAL_GATE. The tool simply does not exist in that state.
+**What happens:**
+- PRIME: entity memory flags "Acme Corp seen 3x, net-30 terms"; finance pre-computation calculates variance = 2.22%
+- FSM path: DECOMPOSE → ASSESS (fetch invoice + PO) → COMPUTE (Decimal arithmetic confirms 2.22%) → POLICY_CHECK (rule: >2% requires escalation — fires) → APPROVAL_GATE (mutation tools blocked; formal rejection brief generated) → COMPLETE
+- Mutation tools are physically unavailable at APPROVAL_GATE — Claude cannot write regardless of what it decides
+- REFLECT: pattern recorded ("invoice variance >2% → policy block"), Acme Corp entity updated
 
 ---
 
-### Case 2: Order Modification with HITL Confirmation
+### 2. Order modification with confirm-before-mutate
 
-**Task:** `"Customer C-8821 wants to change order #ORD-5592: remove 3x Widget A, add 2x Widget B. Check inventory first."`
+> *"Customer C-8821 wants to modify order ORD-5592: remove 3× Widget A, add 2× Widget B. Check inventory first."*
 
-**PRIME:**
-- FSM classifies: `order_modification` → full path
-- Policy doc includes: `confirm_with_user required before modify_order_items`
-
-**EXECUTE:**
-- ASSESS: `get_inventory("Widget B")` → `{available: 47, reserved: 12}`. Sufficient stock.
-- COMPUTE: net change = -3 Widget A, +2 Widget B. No financial delta to compute.
-- POLICY_CHECK: `modify_order_items` requires `confirm_with_user` first → policy fires
-- APPROVAL_GATE: produces confirmation request: `"Confirm: remove 3x Widget A ($89.97 credit), add 2x Widget B ($64.00 charge). Net: -$25.97 for C-8821. Approve?"`
-- Human sends turn 2: `"Confirmed, proceed"`
-- Turn 2 restores FSM checkpoint at APPROVAL_GATE. FSM advances to MUTATE.
-- MUTATE: `modify_order_items(ORD-5592, ...)` → MutationVerifier reads back `get_order(ORD-5592)` immediately → WAL flushed → verified: Widget A removed, Widget B added.
-- SCHEDULE_NOTIFY: `send_order_confirmation(C-8821, ORD-5592)` fires after mutation.
+**What happens:**
+- FSM path: DECOMPOSE → ASSESS (get_inventory: Widget B stock = 12, sufficient) → COMPUTE (net change: -3 Widget A, +2 Widget B) → POLICY_CHECK (policy requires confirm_with_user before order mutations) → APPROVAL_GATE → MUTATE
+- At MUTATE: `confirm_with_user` called → auto-approved (competition mode, logged for policy scoring) → `modify_order_items` called with corrected params → `MutationVerifier` immediately reads back via `get_order` to flush SQLite WAL → VERIFIED
+- Mutation log appended to answer for LLM judge scoring
 
 ---
 
-### Case 3: Payroll Overtime for an Unknown Process Type
+### 3. Overtime calculation — unknown process type
 
-**Task:** `"Calculate Sarah Chen's overtime: 52 hours this week, base rate $28/hr, CA state rules apply."`
+> *"Calculate Sarah Chen's overtime: 52 hours this week, base rate $28/hr, California state rules apply."*
 
-**PRIME:**
-- FSM classifies: `payroll_overtime` — not in 15 built-in templates
-- `synthesize_if_needed()` calls Haiku: synthesizes state sequence `DECOMPOSE → ASSESS → COMPUTE → POLICY_CHECK → COMPLETE` with per-state instructions: `"COMPUTE: apply FLSA daily overtime (1.5x over 8hrs/day, 2x over 12hrs/day) AND weekly overtime (1.5x over 40hrs). Use Decimal arithmetic. CA rule takes precedence over FLSA."`
-- Result cached to `synthesized_definitions.json` — never called again for this type
-- Tool gap detection: Phase 1 matches `FLSA overtime` pattern → `synthesize_and_register()` generates Python function with CA daily overtime logic → sandbox validates against test cases → registered to `tool_registry.json`
-
-**EXECUTE:**
-- ASSESS: `get_employee_record("Sarah Chen")` → `{id: EMP-4421, department: Engineering, state: CA}`
-- COMPUTE: registered tool `calculate_overtime_ca` called:
-  - Daily calc (CA rule): Days assumed 5×8h standard + 12h extra. 5 days × 8h = 40h base. Remaining 12h: first 4h/day at 1.5x, over 12h at 2x.
-  - Weekly: 52h total. 40h at $28.00, 12h at $42.00 = `Decimal("40") * 28 + Decimal("12") * 42 = $1,120 + $504 = $1,624`
-  - CA daily rule produces higher number: applied as required by CA law.
-  - Final: `$1,624.00`
-- COMPLETE: answer includes calculation breakdown with Decimal precision.
-
-**Result:** `$1,624.00 gross pay for week. CA daily overtime rule applied (1.5x on hours 8-12, 2x on hours >12 per day). Tool synthesized and registered for future payroll tasks.`
+**What happens:**
+- smart_classifier returns `"payroll_overtime"` — not in 15 built-in templates
+- dynamic_fsm synthesizes custom state sequence: DECOMPOSE → ASSESS → COMPUTE → MUTATE → COMPLETE
+- Dynamic tool factory Phase 1 matches `hr_overtime` pattern → synthesizes Python with CA rules (1.5× over 8h/day, 2× over 12h/day, FLSA weekly OT) → validates in sandbox → registers
+- COMPUTE: tool executes with 52h, $28/hr, CA ruleset → $1,568.00
+- Pattern stored; next CA overtime task skips synthesis entirely
 
 ---
 
-### Case 4: SLA Breach with Penalty Calculation
+### 4. SLA breach with penalty
 
-**Task:** `"Vendor INFRA-9 had 99.1% uptime last month against 99.9% SLA. Calculate credit per contract #CTR-441."`
+> *"Vendor INFRA-9 had 99.1% uptime last month against a 99.9% SLA. Calculate the service credit per contract CTR-441."*
 
-**PRIME:**
-- Finance pre-computation: month = 43,200 minutes. Allowed downtime: `43200 * 0.001 = 43.2 minutes`. Actual downtime: `43200 * 0.009 = 388.8 minutes`. Breach: `388.8 - 43.2 = 345.6 excess minutes`.
-- Tool gap detection: Phase 1 matches `sla_credit` pattern → synthesizes penalty function: `excess_minutes / total_minutes * monthly_fee * penalty_multiplier` → registered.
-- RL primer: if INFRA-9 seen before, injects contract terms from knowledge base.
-
-**EXECUTE:**
-- ASSESS: `get_contract(CTR-441)` → `{monthly_fee: 85000, penalty_multiplier: 1.5, sla_target: 99.9}`
-- COMPUTE: registered tool `calculate_sla_credit`:
-  - `345.6 / 43200 * 85000 * 1.5 = 0.008 * 85000 * 1.5 = $1,020.00`
-  - Haiku math audit verifies.
-- POLICY_CHECK: breach confirmed, credit authorized per contract terms
-- MUTATE: `apply_account_credit(INFRA-9, 1020.00, "SLA breach CTR-441")` → MutationVerifier reads `get_account_balance(INFRA-9)` → credit confirmed in DB.
-- SCHEDULE_NOTIFY: `send_sla_breach_notification(INFRA-9, CTR-441, 1020.00)` fires.
+**What happens:**
+- Finance pre-computation: downtime = 432 minutes actual vs 43.2 minutes allowed
+- Dynamic tool factory matches `sla_credit` pattern → synthesizes penalty calculator per contract terms
+- COMPUTE: credit = (downtime_excess / total_minutes) × monthly_fee × penalty_multiplier
+- MUTATE: `apply_credit` called → read-back → VERIFIED
+- knowledge_base updated with INFRA-9 penalty rate for future SLA tasks
 
 ---
 
-### Case 5: Multi-Turn HR Offboarding
+### 5. Multi-turn HR offboarding
 
-**Turn 1:** `"Start offboarding for employee E-2291 (last day Friday)"`
+> *Turn 1: "Start offboarding for employee E-2291, last day Friday."*  
+> *Turn 2 (same session): "Now revoke system access and send the exit survey."*
 
-- FSM classifies: `hr_offboarding` → full 8-state path
-- ASSESS: `get_employee(E-2291)` → `{name: "Jordan Kim", department: Platform Engineering, systems: ["GitHub", "AWS", "Slack", "Jira", "Okta"]}`
-- COMPUTE: last day = this Friday. Equipment return deadline = Friday. Final paycheck date = next pay cycle (verified from policy).
-- MUTATE: `update_employee_status(E-2291, "offboarding")`, `create_offboarding_checklist(E-2291, [...])` → both verified via read-back.
-- SCHEDULE_NOTIFY: `schedule_equipment_return(E-2291, Friday)`, `notify_it_team(E-2291, systems=[...])`, `schedule_exit_survey(E-2291)`.
-- FSM checkpoint saved at SCHEDULE_NOTIFY — Jordan Kim's offboarding is in progress.
-
-**Turn 2 (same session):** `"Now revoke system access and send exit survey"`
-
-- Session context summary injected: `"Turn 1: Offboarding initiated for Jordan Kim (E-2291). Status updated. IT notified of 5 systems. Equipment return scheduled Friday. Exit survey scheduled."`
-- FSM checkpoint restored: resumes from SCHEDULE_NOTIFY, skips re-classification entirely.
-- MUTATE: `revoke_access(E-2291, "GitHub")` → read-back. `revoke_access(E-2291, "AWS")` → read-back. `revoke_access(E-2291, "Slack")` → read-back. `revoke_access(E-2291, "Jira")` → read-back. `revoke_access(E-2291, "Okta")` → read-back. All 5 systems confirmed revoked.
-- SCHEDULE_NOTIFY: `send_exit_survey(E-2291)` → delivered.
-- COMPLETE: full offboarding summary with mutation log showing all 5 revocations verified.
-
-Turn 2 did not re-classify, did not re-run policy evaluation, did not re-load the tool schema from scratch. It picked up exactly where the FSM checkpoint said it was.
-
----
-
-## Key Design Decisions
-
-**1. FSM enforces READ-before-MUTATE structurally, not via instruction**
-
-Telling a model "gather data first, then act" in a system prompt is a guideline, not a constraint. The FSM makes it a constraint: during ASSESS and APPROVAL_GATE, write-classified tools are withheld from the tool schema that Claude receives. The model cannot call `update_invoice()` in ASSESS because `update_invoice()` is not in the schema it was given. This eliminates an entire class of premature-write errors without relying on instruction-following.
-
-**2. MUTATE always uses Sonnet — never downgraded**
-
-The token budget system switches all calls to Haiku above 80% consumption. MUTATE has an explicit guard that blocks this downgrade. An incorrect database write is harder to recover from than a slow one, and the marginal cost of Sonnet at the MUTATE state is small relative to the value of correctness. The guard is in `get_model()` in `token_budget.py` and is not overridable by budget pressure.
-
-**3. WAL flush via immediate read-back, not sleep**
-
-SQLite WAL mode means mutations written through the MCP tool land in the WAL file, not the main database file. A scorer reading the main file before WAL checkpoint sees stale data and scores the mutation as failed — even though it happened correctly. The mutation verifier solves this by immediately executing a read of the same entity after every write. A SQLite read forces WAL merge without any artificial delay. The fix is also idempotent: in non-WAL databases, the read-back simply confirms the write.
-
-**4. Dynamic FSM synthesis is a one-time cost per novel process type**
-
-When the classifier returns a process type not in the 15 built-in templates, Haiku synthesizes a state sequence and per-state instructions tailored to that specific type. This synthesis runs exactly once, then the result is cached permanently. A `SUPPLIER_RISK_ASSESSMENT` type gets instructions like `"COMPUTE: weight credit rating 0.3, geo-risk 0.25, ESG score 0.15"` — not the generic `"gather data"` that a static fallback would produce. The cache means the first task of a novel type bears a small one-time Haiku cost; all subsequent tasks of that type run from the cache.
-
-**5. Tool synthesis is validated before registration**
-
-The dynamic tool factory generates Python implementations, but does not register them blindly. Before any synthesized function enters `tool_registry.json`, it is executed in a subprocess sandbox against auto-generated test cases. A function that raises an exception or produces a wrong result on the test cases is discarded, and the agent falls back to asking Claude to compute inline. This prevents a broken synthesized tool from corrupting future tasks.
-
-**6. Bracket-format detection requires a full JSON parse**
-
-Some tasks expect an exact-match answer like `["INV-001", "INV-002"]`. If the answer is detected as bracket-format, it bypasses the self-reflection improvement loop — which would add explanatory text and corrupt the exact-match score. A naive `startswith('[')` check misclassifies prose responses like `"Rejected. [Reason: variance exceeds threshold]"`. The detection function requires: starts with `[`, ends with `]`, AND `json.loads()` returns a `list`. Prose with embedded brackets fails the JSON parse test and flows through the normal reflection path.
+**What happens:**
+- Turn 1: FSM runs DECOMPOSE → ASSESS → MUTATE (update status) → SCHEDULE_NOTIFY → saves checkpoint at end of SCHEDULE_NOTIFY
+- Turn 2: same session_id → FSM checkpoint restored, Haiku-compressed session summary loaded; worker knows what was done in turn 1 without re-reading the full history
+- Turn 2 executes remaining steps without re-classifying the process type
 
 ---
 
 ## 8-State FSM Reference
 
-| State | Purpose | Default Model | Notes |
-|-------|---------|---------------|-------|
-| DECOMPOSE | Classify task, enumerate data needs, identify entities | Haiku | Entry point for all tasks |
-| ASSESS | Read-only data gathering via tools | Haiku | Mutation tools absent from schema |
-| COMPUTE | Pure arithmetic from collected data — no tool calls | Sonnet | Haiku math audit runs after; MUTATE blocked if audit fails |
-| POLICY_CHECK | Evaluate policy rules against computed values | Haiku | Deterministic; LLM not used for structured rules |
-| APPROVAL_GATE | Produce approval document; wait for HITL decision | Haiku | All mutation tools blocked here |
-| MUTATE | Write operations; each write followed by read-back | Sonnet | Never downgraded to Haiku; WAL flush on every write |
-| SCHEDULE_NOTIFY | Notifications, scheduling, audit log entries | Haiku | Runs only after all mutations are verified |
-| COMPLETE | Summarize completed actions | Haiku | Final output only |
+| State | Purpose | Mutations allowed | Default model |
+|---|---|---|---|
+| DECOMPOSE | Classify task, enumerate data needs | No | Haiku |
+| ASSESS | Read-only data gathering via tools | No | Haiku |
+| COMPUTE | Arithmetic from collected data — no tool calls | No | Sonnet |
+| POLICY_CHECK | Evaluate policy rules against computed values | No | Haiku (deterministic rules) |
+| APPROVAL_GATE | Present approval document; await HITL | **Blocked** | Haiku |
+| MUTATE | Write operations; each followed by read-back | Yes | **Always Sonnet** |
+| SCHEDULE_NOTIFY | Notifications, scheduling, audit entries | Yes | Haiku |
+| COMPLETE | Summarize completed actions | No | Haiku |
 
-Error paths: `ESCALATE` (policy violation requiring human intervention), `FAILED` (unrecoverable error after recovery attempts).
-
-Read-only shortcircuit: tasks with no action verbs collapse to DECOMPOSE → ASSESS → COMPLETE.
-
-Multi-checkpoint: processes requiring sequential human confirmations can cycle through APPROVAL_GATE → MUTATE → APPROVAL_GATE using `fsm.reopen_approval_gate()`.
+Error paths: ESCALATE (policy violation requiring human), FAILED (unrecoverable).
 
 ---
 
 ## Component Map
 
 | File | Role |
-|------|------|
-| `main.py` | CLI entry point; FastAPI server startup with `--host`, `--port`, `--card-url` |
-| `src/server.py` | FastAPI app; A2A JSON-RPC handler; `/health` and `/rl/status` endpoints |
-| `src/worker_brain.py` | `MiniAIWorker`: 3-phase cognitive loop (PRIME → EXECUTE → REFLECT) |
-| `src/fsm_runner.py` | 8-state FSM engine; 15 built-in process templates; read-only shortcircuit |
-| `src/dynamic_fsm.py` | Haiku FSM synthesizer for unknown process types; caches to `synthesized_definitions.json` |
-| `src/claude_executor.py` | Primary Claude execution engine; agentic tool-call loop (up to 20 iterations) |
-| `src/five_phase_executor.py` | 5-phase executor: PLAN / GATHER / SYNTHESIZE / ARTIFACT / INSIGHT |
-| `src/self_moa.py` | Mixture-of-Agents: dual top_p Haiku + word-overlap consensus + optional Sonnet |
-| `src/strategy_bandit.py` | UCB1 multi-armed bandit; learns FSM / five_phase / MoA win rates per process type |
-| `src/token_budget.py` | 10K token budget; model tier selection; bracket-format detection |
-| `src/self_reflection.py` | Post-execution answer quality scoring; improvement pass if score < 0.65 |
-| `src/compute_verifier.py` | COMPUTE state math audit via Haiku; catches arithmetic errors before MUTATE |
-| `src/mutation_verifier.py` | Write-tool tracking + immediate read-back for WAL flush; builds mutation log |
-| `src/hitl_guard.py` | Tool classification (read / compute / mutate); mutation blocking at APPROVAL_GATE |
-| `src/policy_checker.py` | Deterministic policy rule evaluation; supports `&&`, `||`, `!`, comparisons |
-| `src/schema_adapter.py` | Schema drift resilience; fuzzy column matching; 5-tier correction strategy |
-| `src/smart_classifier.py` | Haiku semantic process type classification; keyword fallback on timeout |
+|---|---|
+| `src/server.py` | FastAPI app; A2A JSON-RPC handler; `/health`, `/rl/status` |
+| `src/worker_brain.py` | MiniAIWorker: 3-phase cognitive loop (PRIME / EXECUTE / REFLECT) |
+| `src/fsm_runner.py` | 8-state FSM engine; 15 process templates; read-only shortcircuit |
+| `src/dynamic_fsm.py` | Haiku FSM synthesizer for unknown process types |
+| `src/claude_executor.py` | Agentic Claude execution loop (max 20 iterations, 18 tool calls) |
+| `src/five_phase_executor.py` | Five-phase executor: PLAN → GATHER → SYNTHESIZE → ARTIFACT → INSIGHT |
+| `src/self_moa.py` | Dual top_p MoA with word-overlap consensus; numeric verification MoA |
+| `src/strategy_bandit.py` | UCB1 multi-armed bandit; learns FSM / five_phase / MoA win rate per process type |
+| `src/token_budget.py` | 10K token budget; state-aware model selection; bracket format detection |
+| `src/mutation_verifier.py` | Write-tool tracking; WAL flush via read-back; 14 known write→read tool pairs |
+| `src/compute_verifier.py` | COMPUTE state math audit via Haiku; correction pass before MUTATE |
+| `src/self_reflection.py` | Answer quality scoring; improvement pass if score < threshold |
+| `src/hitl_guard.py` | Tool classification (read / compute / mutate); blocks mutation tools at APPROVAL_GATE |
+| `src/policy_checker.py` | Deterministic policy rule evaluation; supports `&&`, `\|\|`, `!`, comparisons |
+| `src/schema_adapter.py` | Schema drift resilience; 5-tier fuzzy column matching; session schema cache |
+| `src/smart_classifier.py` | Haiku process type classification with keyword fallback |
+| `src/dynamic_tools.py` | Two-phase gap detection (36 regex patterns + LLM); sandbox synthesis; persistent registry |
 | `src/rl_loop.py` | Case log persistence; quality scoring; RL primer construction |
-| `src/context_pruner.py` | Case log quality filtering; repeated-failure detection; conservative prune guard |
-| `src/context_rl.py` | Context injection accuracy tracking; drift detection for pre-computed thresholds |
-| `src/knowledge_extractor.py` | Post-task Haiku fact extraction; domain-keyed knowledge base |
-| `src/entity_extractor.py` | Zero-cost regex entity tracking (vendors, IDs, amounts, people) across tasks |
-| `src/dynamic_tools.py` | Runtime tool factory: 30+ gap patterns + LLM phase-2 detection; sandboxed synthesis |
-| `src/mcp_bridge.py` | MCP tool call bridge; pre-flight parameter validation; empty result detection |
-| `src/session_context.py` | Multi-turn session state; FSM checkpoints; Haiku memory compression at 20 turns |
+| `src/context_pruner.py` | Case log quality filtering; stale/repeated-failure entry removal |
+| `src/context_rl.py` | Finance pre-computation accuracy tracking; drift detection |
+| `src/knowledge_extractor.py` | Post-task domain fact extraction; keyword-keyed retrieval |
+| `src/entity_extractor.py` | Zero-cost regex entity tracking across tasks |
+| `src/mcp_bridge.py` | MCP tool bridge; pre-flight parameter validation; tool schema patching |
+| `src/session_context.py` | Multi-turn session state; FSM checkpoints; Haiku memory compression |
 | `src/recovery_agent.py` | Tool failure recovery: synonym → decompose → Haiku advice → graceful degrade |
-| `src/paginated_tools.py` | Cursor-loop pagination for bulk data tools |
-| `src/document_generator.py` | Structured document generation (approval briefs, post-mortems) |
-| `src/financial_calculator.py` | Exact decimal arithmetic for financial calculations |
-| `src/finance_tools.py` | Financial analysis tools (NPV, amortization, depreciation) |
+| `src/financial_calculator.py` | Exact `Decimal` arithmetic for financial calculations |
 | `src/structured_output.py` | Final answer formatting; policy section builder |
-| `src/output_validator.py` | Output format validation; bracket preservation checks |
-| `src/privacy_guard.py` | PII detection before external calls |
-| `src/process_definitions.py` | Built-in process definitions for smart classifier and dynamic FSM |
-| `src/memory_compressor.py` | Haiku-based conversation memory compression |
-| `src/config.py` | Environment variable loading |
+| `src/output_validator.py` | Output format validation; bracket format preservation |
+| `src/privacy_guard.py` | PII/credential detection before any API call |
+| `src/brainos_client.py` | BrainOS platform API client (fallback orchestration) |
 
 ---
 
 ## Running
 
 ### Requirements
-
-Python 3.11+.
 
 ```
 fastapi>=0.115
@@ -435,47 +355,41 @@ pydantic>=2.0
 boto3>=1.34
 ```
 
-### Environment Variables
+Python 3.11+.
+
+### Environment variables
 
 | Variable | Required | Description |
-|----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Claude API key (Haiku and Sonnet calls) |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Yes | Claude API key |
 | `GREEN_AGENT_MCP_URL` | Yes | MCP tool server base URL |
 | `FALLBACK_MODEL` | No | Default: `claude-sonnet-4-6` |
-| `TOOL_TIMEOUT` | No | Seconds per tool call; default 10 |
-| `TASK_TIMEOUT` | No | Seconds per task; default 120 |
-| `RL_CACHE_DIR` | No | Directory for bandit and registry JSON files; default `/app` |
-| `BRAINOS_API_URL` | No | BrainOS platform URL (fallback orchestration) |
-| `BRAINOS_API_KEY` | No | BrainOS API key |
-| `S3_TRAINING_BUCKET` | No | S3 bucket for RL training seed on startup |
-| `AWS_ACCESS_KEY_ID` | No | AWS credentials for S3 access |
-| `AWS_SECRET_ACCESS_KEY` | No | AWS credentials for S3 access |
-| `PURPLE_AGENT_CARD_URL` | No | Public URL advertised in AgentCard |
+| `TOOL_TIMEOUT` | No | Seconds per tool call (default: 10) |
+| `TASK_TIMEOUT` | No | Seconds per task (default: 120) |
+| `RL_CACHE_DIR` | No | Directory for JSON state files (default: `/app`) |
+| `AWS_ACCESS_KEY_ID` | No | S3 credentials for RL case log seed |
+| `AWS_SECRET_ACCESS_KEY` | No | S3 credentials for RL case log seed |
+| `AWS_S3_BUCKET` | No | S3 bucket name |
 
 ### Start
 
 ```bash
 pip install -r requirements.txt
-
 export ANTHROPIC_API_KEY=sk-ant-...
 export GREEN_AGENT_MCP_URL=http://localhost:9009
-
 python main.py --host 0.0.0.0 --port 9010
-```
-
-Docker:
-
-```bash
-docker build -t purple-agent .
-docker run -p 9010:9010 \
-  -e ANTHROPIC_API_KEY=sk-ant-... \
-  -e GREEN_AGENT_MCP_URL=http://mcp-server:9009 \
-  purple-agent
 ```
 
 ### Endpoints
 
-**POST /** — A2A JSON-RPC 2.0 `tasks/send`:
+| Endpoint | Description |
+|---|---|
+| `POST /` | A2A JSON-RPC 2.0 — `tasks/send` |
+| `GET /.well-known/agent-card.json` | Agent capabilities declaration |
+| `GET /health` | Health check |
+| `GET /rl/status` | Case log size, bandit state, tool registry, FSM cache |
+
+### A2A request format
 
 ```json
 {
@@ -486,22 +400,31 @@ docker run -p 9010:9010 \
     "id": "task-123",
     "message": {
       "role": "user",
-      "parts": [{ "text": "Process expense claim EMP-447, $2,340 for team offsite..." }]
+      "parts": [{ "text": "Process the vendor invoice for Acme Corp..." }]
+    },
+    "metadata": {
+      "policy_doc": "...",
+      "tools_endpoint": "https://...",
+      "session_id": "worker-abc"
     }
   }
 }
 ```
 
-**GET /.well-known/agent-card.json** — AgentCard metadata
+---
 
-**GET /health** — Health check
+## Tech Stack
 
-**GET /rl/status** — Returns case log counts, UCB1 bandit arm values (Q and n per arm per process type), tool registry size, and synthesized FSM definition cache size
+- **Runtime:** Python 3.11, FastAPI, uvicorn
+- **LLM:** Anthropic Claude (Haiku for classification/synthesis/audit, Sonnet for COMPUTE/MUTATE)
+- **FSM:** Custom 8-state engine with dynamic synthesis for unknown process types
+- **Tool bridge:** MCP HTTP with pre-flight validation and schema patching
+- **Numerics:** `decimal.Decimal` + `random` + `statistics` in sandboxed tool execution
+- **RL:** UCB1 bandit + case log + quality scoring + knowledge extraction
+- **Storage:** S3 (RL case log seed), local JSON (tool registry, bandit state, entity memory, knowledge base)
 
 ---
 
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
-
-Copyright 2026 BrainOS / Abhishek.
