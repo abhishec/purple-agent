@@ -1,194 +1,73 @@
 """
 finance_tools.py
-Exposes financial_calculator functions as synthetic MCP-compatible tool definitions.
+Financial computation support — two usage patterns:
 
-These tools are intercepted by worker_brain._execute BEFORE being forwarded to the
-MCP endpoint — they run locally in pure Python (integer-cent precision).
+Pattern A — Synthetic tool (amortization only):
+  Loan amortization is the one calculation too complex for Claude to do natively
+  (360-period compounding, per-period integer rounding, payment schedule).
+  Exposed as finance_loan_amortization in FINANCE_TOOL_DEFINITIONS.
+  Intercepted in worker_brain._direct_call before MCP network round-trip.
 
-Pattern: Claude calls "finance_*" tools just like any MCP tool. The on_tool_call
-wrapper in worker_brain checks for the "finance_" prefix and routes to this module.
+Pattern B — Context injection (all other financial calculations):
+  Variance checks, proration, SLA credits, depreciation, revenue recognition.
+  These are pre-computed in the PRIME phase using financial_calculator.py and
+  injected as ground-truth facts into the COMPUTE state prompt.
+  Zero query budget cost. ~30 tokens instead of 560.
+  FSM COMPUTE state semantics preserved ("DO NOT call any tools").
 
-Why this matters for competition scoring:
-  - Functional Correctness: boundary-case precision (2.04% vs 2.0% variance threshold)
-  - Cost Efficiency: zero API call for math (all local Python, sub-millisecond)
-  - Innovation: competitors use float arithmetic; we use integer-cent precision
-
-Covers benchmark categories: invoice_reconciliation, payroll, sla_breach,
-subscription_migration, ar_collections, month_end_close, procurement.
+Why this split:
+  amortization = 360 iterations, per-step rounding accumulates cent drift.
+  Claude cannot produce correct amortization tables natively.
+  Everything else = single-formula calculations Claude handles precisely.
 """
 from __future__ import annotations
 
 from src.financial_calculator import (
+    apply_variance_check,
     prorated_amount,
     prorated_for_period,
     apply_early_termination_fee,
-    apply_variance_check,
     compute_sla_credit,
-    apply_sub_limit,
     amortize_loan,
     payment_plan_summary,
     straight_line_depreciation,
     recognize_revenue,
-    net_price_delta,
 )
 
-# ── Tool definitions (Anthropic tool_use format) ──────────────────────────────
+# ── Synthetic tool definition — amortization only ─────────────────────────────
+# All other calculations are handled via build_finance_context() injection.
 
 FINANCE_TOOL_DEFINITIONS = [
     {
-        "name": "finance_variance_check",
-        "description": (
-            "Check invoice vs PO variance. Returns whether variance exceeds threshold "
-            "and exact percentage. Use for invoice_reconciliation tasks."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "invoiced": {"type": "number", "description": "Invoice amount in dollars"},
-                "po_amount": {"type": "number", "description": "Purchase order amount in dollars"},
-                "threshold_pct": {"type": "number", "description": "Variance threshold percentage, e.g. 5 for 5%"},
-            },
-            "required": ["invoiced", "po_amount", "threshold_pct"],
-        },
-    },
-    {
-        "name": "finance_prorated_amount",
-        "description": (
-            "Calculate prorated amount (remaining value) for partial period usage. "
-            "Use for subscription_migration, payroll, billing tasks."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "total": {"type": "number", "description": "Total contract/subscription value in dollars"},
-                "days_used": {"type": "number", "description": "Number of days already used"},
-                "total_days": {"type": "number", "description": "Total days in the full period"},
-            },
-            "required": ["total", "days_used", "total_days"],
-        },
-    },
-    {
-        "name": "finance_sla_credit",
-        "description": (
-            "Compute SLA credit amount based on downtime minutes and contract value. "
-            "Use for sla_breach tasks."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "contract_value": {"type": "number", "description": "Monthly contract value in dollars"},
-                "downtime_minutes": {"type": "number", "description": "Total downtime in minutes"},
-                "sla_target_pct": {"type": "number", "description": "SLA uptime target, e.g. 99.9"},
-                "credit_pct_per_hour": {"type": "number", "description": "Credit percentage per hour of downtime"},
-                "max_credit_pct": {"type": "number", "description": "Maximum credit as % of contract value", "default": 30},
-            },
-            "required": ["contract_value", "downtime_minutes", "sla_target_pct", "credit_pct_per_hour"],
-        },
-    },
-    {
-        "name": "finance_early_termination",
-        "description": "Calculate net refund after early termination fee deduction.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "remaining_value": {"type": "number", "description": "Remaining contract value in dollars"},
-                "fee_pct": {"type": "number", "description": "Early termination fee percentage, e.g. 10 for 10%"},
-            },
-            "required": ["remaining_value", "fee_pct"],
-        },
-    },
-    {
         "name": "finance_loan_amortization",
-        "description": "Generate full loan amortization schedule with monthly payment breakdown.",
+        "description": (
+            "Generate full loan amortization schedule with monthly payment breakdown. "
+            "Returns summary (total interest, monthly payment) and first 3 payments. "
+            "Use for payroll loans, vendor financing, equipment leases."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "principal": {"type": "number", "description": "Loan principal in dollars"},
-                "annual_rate_pct": {"type": "number", "description": "Annual interest rate percentage, e.g. 6.5"},
+                "annual_rate_pct": {"type": "number", "description": "Annual interest rate %, e.g. 6.5"},
                 "months": {"type": "number", "description": "Loan term in months"},
             },
             "required": ["principal", "annual_rate_pct", "months"],
         },
     },
-    {
-        "name": "finance_revenue_recognition",
-        "description": "Calculate recognized and deferred revenue for a contract period.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "contract_value": {"type": "number", "description": "Total contract value in dollars"},
-                "contract_months": {"type": "number", "description": "Total contract duration in months"},
-                "periods_elapsed": {"type": "number", "description": "Months elapsed so far"},
-            },
-            "required": ["contract_value", "contract_months", "periods_elapsed"],
-        },
-    },
-    {
-        "name": "finance_depreciation",
-        "description": "Calculate straight-line monthly depreciation for an asset.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "cost": {"type": "number", "description": "Asset cost in dollars"},
-                "salvage": {"type": "number", "description": "Salvage value in dollars"},
-                "useful_life_months": {"type": "number", "description": "Useful life in months"},
-            },
-            "required": ["cost", "salvage", "useful_life_months"],
-        },
-    },
 ]
 
 
-# ── Dispatch table ──────────────────────────────────────────────────────────────
-
 def call_finance_tool(tool_name: str, params: dict) -> dict:
-    """
-    Route a finance_* tool call to the correct financial_calculator function.
-    Returns a result dict (same shape as MCP tool responses).
-    All computation runs locally in integer-cent precision — zero API cost.
-    """
+    """Route finance_* synthetic tool calls to local Python calculation."""
     try:
-        if tool_name == "finance_variance_check":
-            result = apply_variance_check(
-                invoiced=float(params["invoiced"]),
-                po_amount=float(params["po_amount"]),
-                threshold_pct=float(params["threshold_pct"]),
-            )
-            return {"result": result, "precision": "integer_cents"}
-
-        elif tool_name == "finance_prorated_amount":
-            amount = prorated_amount(
-                total=float(params["total"]),
-                days_used=int(params["days_used"]),
-                total_days=int(params["total_days"]),
-            )
-            return {"prorated_amount": amount, "currency": "USD", "precision": "integer_cents"}
-
-        elif tool_name == "finance_sla_credit":
-            credit = compute_sla_credit(
-                contract_value=float(params["contract_value"]),
-                downtime_minutes=float(params["downtime_minutes"]),
-                sla_target_pct=float(params["sla_target_pct"]),
-                credit_pct_per_hour=float(params["credit_pct_per_hour"]),
-                max_credit_pct=float(params.get("max_credit_pct", 30)),
-            )
-            return {"sla_credit": credit, "currency": "USD", "precision": "integer_cents"}
-
-        elif tool_name == "finance_early_termination":
-            net_refund = apply_early_termination_fee(
-                remaining_value=float(params["remaining_value"]),
-                fee_pct=float(params["fee_pct"]),
-            )
-            return {"net_refund": net_refund, "currency": "USD", "precision": "integer_cents"}
-
-        elif tool_name == "finance_loan_amortization":
+        if tool_name == "finance_loan_amortization":
             schedule = amortize_loan(
                 principal=float(params["principal"]),
                 annual_rate_pct=float(params["annual_rate_pct"]),
                 months=int(params["months"]),
             )
             summary = payment_plan_summary(schedule)
-            # Return summary + first 3 periods to keep response compact
             return {
                 "summary": summary,
                 "first_3_payments": [
@@ -198,30 +77,127 @@ def call_finance_tool(tool_name: str, params: dict) -> dict:
                 ],
                 "precision": "integer_cents",
             }
-
-        elif tool_name == "finance_revenue_recognition":
-            result = recognize_revenue(
-                contract_value=float(params["contract_value"]),
-                contract_months=int(params["contract_months"]),
-                periods_elapsed=int(params["periods_elapsed"]),
-            )
-            return {"result": result, "precision": "integer_cents"}
-
-        elif tool_name == "finance_depreciation":
-            monthly = straight_line_depreciation(
-                cost=float(params["cost"]),
-                salvage=float(params["salvage"]),
-                useful_life_months=int(params["useful_life_months"]),
-            )
-            return {"monthly_depreciation": monthly, "currency": "USD", "precision": "integer_cents"}
-
-        else:
-            return {"error": f"Unknown finance tool: {tool_name}"}
-
-    except (KeyError, ValueError, TypeError, ZeroDivisionError) as e:
-        return {"error": f"finance_tool calculation error: {e}", "tool": tool_name}
+        return {"error": f"Unknown finance tool: {tool_name}"}
+    except (KeyError, ValueError, TypeError) as e:
+        return {"error": f"finance_tool error: {e}", "tool": tool_name}
 
 
 def is_finance_tool(tool_name: str) -> bool:
-    """Returns True if the tool name is a local finance tool (not MCP)."""
     return tool_name.startswith("finance_")
+
+
+# ── Context injection — pre-compute financial facts for COMPUTE state ─────────
+
+import re as _re
+
+# Patterns that signal a financial computation task
+_DOLLAR_PAT = _re.compile(r"\$\s?([\d,]+(?:\.\d{1,2})?)", _re.IGNORECASE)
+_PCT_PAT = _re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_DAYS_PAT = _re.compile(r"(\d+)\s*days?", _re.IGNORECASE)
+_MONTHS_PAT = _re.compile(r"(\d+)\s*months?", _re.IGNORECASE)
+
+
+def build_finance_context(task_text: str, process_type: str) -> str:
+    """
+    Pre-compute financial facts and return a concise context block for injection
+    into the COMPUTE state system prompt.
+
+    Called during PRIME phase. Returns empty string if no financial signals found.
+    Zero API cost. ~20-50 tokens when it fires.
+    """
+    lines: list[str] = []
+    text = task_text.lower()
+
+    # ── Variance check (invoice_reconciliation, procurement) ──────────────────
+    if process_type in ("invoice_reconciliation", "procurement", "expense_approval"):
+        amounts = _extract_dollars(task_text)
+        pcts = _extract_pcts(task_text)
+        if len(amounts) >= 2 and pcts:
+            # Assume first two amounts are invoiced vs. PO (order in text)
+            invoiced, po = amounts[0], amounts[1]
+            threshold = pcts[0]
+            try:
+                result = apply_variance_check(invoiced, po, threshold)
+                sign = "EXCEEDS" if result["exceeds"] else "does NOT exceed"
+                lines.append(
+                    f"Pre-computed variance: ${invoiced:,.2f} vs ${po:,.2f} = "
+                    f"{result['pct']:.4f}% variance — {sign} {threshold}% threshold. "
+                    f"Requires escalation: {result['exceeds']}."
+                )
+            except Exception:
+                pass
+
+    # ── SLA credit (sla_breach) ───────────────────────────────────────────────
+    # compute_sla_credit(downtime_mins, sla_max_mins, invoice_amount, credit_pct_per_breach, cap_pct)
+    if process_type == "sla_breach":
+        amounts = _extract_dollars(task_text)
+        pcts = _extract_pcts(task_text)
+        downtime_m = _re.search(r"(\d+)\s*(?:minute|min)", task_text, _re.IGNORECASE)
+        downtime_h = _re.search(r"(\d+(?:\.\d+)?)\s*(?:hour|hr)", task_text, _re.IGNORECASE)
+        if amounts and (downtime_m or downtime_h):
+            downtime_min = (
+                float(downtime_m.group(1)) if downtime_m
+                else float(downtime_h.group(1)) * 60
+            )
+            contract_val = amounts[0]
+            sla_tgt = next((p for p in pcts if p > 90), 99.9)
+            credit_pct = next((p for p in pcts if p < 50), 10.0)
+            cap = next((p for p in pcts if 20 <= p <= 50), 30.0)
+            # sla_max_mins = allowed downtime for 30-day month at target SLA
+            sla_max_mins = 30 * 24 * 60 * (1.0 - sla_tgt / 100.0)
+            try:
+                credit = compute_sla_credit(downtime_min, sla_max_mins, contract_val, credit_pct, cap)
+                lines.append(
+                    f"Pre-computed SLA credit: ${credit:,.2f} for {downtime_min:.0f} min downtime "
+                    f"vs {sla_max_mins:.1f} min allowed (SLA {sla_tgt}% on ${contract_val:,.2f} contract)."
+                )
+            except Exception:
+                pass
+
+    # ── Proration (subscription_migration, month_end_close) ──────────────────
+    if process_type in ("subscription_migration", "month_end_close", "ar_collections"):
+        amounts = _extract_dollars(task_text)
+        days = _re.findall(r"(\d+)\s*(?:day|days)", task_text, _re.IGNORECASE)
+        months = _re.findall(r"(\d+)\s*(?:month|months)", task_text, _re.IGNORECASE)
+        if amounts and days and len(days) >= 2:
+            try:
+                total_days = int(days[1])
+                used_days = int(days[0])
+                remaining = prorated_amount(amounts[0], used_days, total_days)
+                lines.append(
+                    f"Pre-computed proration: ${amounts[0]:,.2f} for {used_days}/{total_days} days "
+                    f"= ${remaining:,.2f} remaining value."
+                )
+            except Exception:
+                pass
+        elif amounts and months and len(months) >= 2:
+            try:
+                total_mo = int(months[1]) * 30
+                used_mo = int(months[0]) * 30
+                remaining = prorated_amount(amounts[0], used_mo, total_mo)
+                lines.append(
+                    f"Pre-computed proration: ${amounts[0]:,.2f} for {months[0]}/{months[1]} months "
+                    f"= ${remaining:,.2f} remaining value."
+                )
+            except Exception:
+                pass
+
+    if not lines:
+        return ""
+    return (
+        "## Pre-Computed Financial Facts\n"
+        "The following values were computed with integer-cent precision. "
+        "Use them as ground truth in your COMPUTE reasoning — do not recalculate.\n"
+        + "\n".join(f"- {ln}" for ln in lines)
+    )
+
+
+def _extract_dollars(text: str) -> list[float]:
+    """Extract dollar amounts from text, return as floats sorted largest-first."""
+    matches = _DOLLAR_PAT.findall(text)
+    return sorted([float(m.replace(",", "")) for m in matches], reverse=True)
+
+
+def _extract_pcts(text: str) -> list[float]:
+    """Extract percentage values from text."""
+    return [float(m) for m in _PCT_PAT.findall(text)]

@@ -50,7 +50,7 @@ from src.self_reflection import reflect_on_answer, build_improvement_prompt, sho
 from src.output_validator import validate_output, get_missing_fields_prompt              # Wave 9
 from src.self_moa import quick_synthesize as moa_quick                                   # Wave 10
 from src.five_phase_executor import five_phase_execute, should_use_five_phase            # Wave 10
-from src.finance_tools import FINANCE_TOOL_DEFINITIONS, call_finance_tool, is_finance_tool  # Wave 10: integer-cent precision
+from src.finance_tools import FINANCE_TOOL_DEFINITIONS, call_finance_tool, is_finance_tool, build_finance_context  # Wave 10: integer-cent precision
 
 
 def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
@@ -182,6 +182,12 @@ class MiniAIWorker:
         if entity_ctx:
             self.budget.consume(entity_ctx, "entities")
 
+        # Pre-compute financial facts for COMPUTE state (zero API cost, ~30 tokens)
+        # Injected as ground truth so COMPUTE state needs no extra tool calls for math.
+        finance_ctx = build_finance_context(task_text, fsm.process_type if not checkpoint else "general")
+        if finance_ctx:
+            self.budget.consume(finance_ctx, "finance_context")
+
         # Build system context
         context_parts = [
             f"## MiniAIWorker | Task: {task_id} | Session: {self.session_id}",
@@ -193,6 +199,8 @@ class MiniAIWorker:
             context_parts.append(self.budget.cap_prompt(kb_context, "knowledge"))
         if entity_ctx:
             context_parts.append(self.budget.cap_prompt(entity_ctx, "entities"))
+        if finance_ctx:
+            context_parts.append(self.budget.cap_prompt(finance_ctx, "finance"))
         if multi_turn_ctx:
             context_parts.append(self.budget.cap_prompt(multi_turn_ctx, "history"))
         context_parts.append(phase_prompt)
