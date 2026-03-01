@@ -10,6 +10,7 @@ from src.worker_brain import run_worker   # MiniAIWorker replaces executor direc
 from src.training_loader import seed_from_training_data, is_stale
 from src.context_rl import get_context_stats
 from src.dynamic_fsm import get_synthesis_stats
+from src.dynamic_tools import seed_amortization_tool, get_tool_registry_stats
 from src.report_analyzer import analyze_and_save, load_intelligence
 
 app = FastAPI(title="BrainOS Purple Agent", version="2.0.0")
@@ -44,6 +45,11 @@ async def on_startup():
     from the first task (not just after the first benchmark round).
     Non-blocking — agent serves requests immediately; seed runs in background thread.
     """
+    # Wave 14: seed the amortization tool into the dynamic tool registry.
+    # This migrates it from hardcoded finance_tools.py to the persistent registry.
+    # All future tasks get it from the registry — zero hardcoded tools remaining.
+    seed_amortization_tool()
+
     import threading
     def _seed():
         try:
@@ -217,8 +223,9 @@ async def rl_status():
         "case_log": case_stats,
         "knowledge_base": kb_stats,
         "entity_memory": entity_stats,
-        "context_rl": ctx_stats,        # per-process confidence + drift alerts
-        "dynamic_fsm": get_synthesis_stats(),  # Wave 13: novel type synthesis cache
+        "context_rl": ctx_stats,                # per-process confidence + drift alerts
+        "dynamic_fsm": get_synthesis_stats(),   # Wave 13: novel FSM type synthesis cache
+        "dynamic_tools": get_tool_registry_stats(),  # Wave 14: runtime tool factory stats
     }
 
 

@@ -1,19 +1,21 @@
 """
 finance_tools.py
-Financial computation support — FSM-managed dynamic approach.
+Financial computation support — context injection only.
 
-TWO PATTERNS (no static hardcoded tools except amortization):
+Wave 14: The amortization synthetic tool has been migrated to dynamic_tools.py
+(seeded into tool_registry.json at startup). This file now contains ONLY the
+context injection pattern — zero synthetic tool definitions.
 
-Pattern A — Context injection (all calculations except amortization):
+Pattern A — Context injection (all standard calculations):
   build_finance_context() is called in PRIME phase.
   Checks context_rl confidence BEFORE injecting.
   Injects decision chains, not just numbers: "variance = 2.04% → APPROVE"
   When drift is detected: injects WARNING instead of value.
   Zero query budget cost. ~30-50 tokens vs 560 for old 7-tool approach.
 
-Pattern B — Synthetic tool (amortization only):
-  finance_loan_amortization: 360-period compounding Claude cannot do natively.
-  One legitimate exception to the dynamic-discovery rule.
+Pattern B (tools) — Handled by dynamic_tools.py:
+  finance_loan_amortization: seeded into tool_registry.json at startup
+  All other math gaps: synthesized on-demand by dynamic_tools.synthesize_and_register()
 
 RL integration (via context_rl.py):
   Every injection is confidence-gated:
@@ -40,58 +42,6 @@ from src.context_rl import (
     get_drift_warning,
     get_confidence_annotation,
 )
-
-# ── Synthetic tool (amortization only) ────────────────────────────────────────
-
-FINANCE_TOOL_DEFINITIONS = [
-    {
-        "name": "finance_loan_amortization",
-        "description": (
-            "Generate full loan amortization schedule with monthly payment breakdown. "
-            "Returns summary (total interest, monthly payment) and first 3 payments. "
-            "Use for payroll loans, vendor financing, equipment leases. "
-            "Local computation — integer-cent precision, zero network cost."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "principal":        {"type": "number", "description": "Loan principal in dollars"},
-                "annual_rate_pct":  {"type": "number", "description": "Annual interest rate %, e.g. 6.5"},
-                "months":           {"type": "number", "description": "Loan term in months"},
-            },
-            "required": ["principal", "annual_rate_pct", "months"],
-        },
-    },
-]
-
-
-def call_finance_tool(tool_name: str, params: dict) -> dict:
-    """Route finance_* synthetic tool calls to local Python (zero API cost)."""
-    try:
-        if tool_name == "finance_loan_amortization":
-            schedule = amortize_loan(
-                principal=float(params["principal"]),
-                annual_rate_pct=float(params["annual_rate_pct"]),
-                months=int(params["months"]),
-            )
-            summary = payment_plan_summary(schedule)
-            return {
-                "summary": summary,
-                "first_3_payments": [
-                    {"month": p.month, "payment": p.payment, "principal": p.principal,
-                     "interest": p.interest, "balance": p.balance}
-                    for p in schedule[:3]
-                ],
-                "precision": "integer_cents",
-            }
-        return {"error": f"Unknown finance tool: {tool_name}"}
-    except (KeyError, ValueError, TypeError) as e:
-        return {"error": f"finance_tool error: {e}", "tool": tool_name}
-
-
-def is_finance_tool(tool_name: str) -> bool:
-    return tool_name.startswith("finance_")
-
 
 # ── Patterns ────────────────────────────────────────────────────────────────────
 

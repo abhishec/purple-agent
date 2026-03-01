@@ -22,8 +22,8 @@ def validate_tool_call(
         available = [t.get("name") for t in tools_list[:10]]
         return False, f"Tool '{tool_name}' not in available tools. Available: {available}"
 
-    # Check required params from input_schema
-    input_schema = tool_schema.get("input_schema", {})
+    # Check required params — handle both input_schema (Anthropic) and inputSchema (MCP spec)
+    input_schema = tool_schema.get("input_schema") or tool_schema.get("inputSchema", {})
     required = input_schema.get("required", [])
     missing = [r for r in required if r not in params]
     if missing:
