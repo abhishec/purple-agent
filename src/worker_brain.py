@@ -98,6 +98,90 @@ class MiniAIWorker:
         self._ep: str = ""
         self._api_calls: int = 0   # total LLM API calls this task (cost guard)
 
+    # ── PARAMETER NORMALIZATION ───────────────────────────────────────────
+
+    def _normalize_tool_params(self, tool_name: str, params: dict) -> dict:
+        """
+        Normalize parameter names to match green agent's _apply_mutations expectations.
+        The MCP server serves slim schemas; Claude may send different param names.
+        """
+        params = dict(params)  # don't mutate caller's dict
+
+        # modify_order_items: Claude sends item_id, _apply_mutations expects id
+        if tool_name == "modify_order_items":
+            modifications = params.get("modifications", [])
+            if isinstance(modifications, list):
+                normalized = []
+                for item in modifications:
+                    if isinstance(item, dict):
+                        norm = dict(item)
+                        # item_id → id
+                        if "item_id" in norm and "id" not in norm:
+                            norm["id"] = norm.pop("item_id")
+                        # price → unit_price
+                        if "price" in norm and "unit_price" not in norm:
+                            norm["unit_price"] = norm.pop("price")
+                        # variant dict → variant_id (extract id from nested dict)
+                        if "variant" in norm and isinstance(norm["variant"], dict):
+                            norm["variant_id"] = norm["variant"].get("id", norm["variant"])
+                            del norm["variant"]
+                        normalized.append(norm)
+                    else:
+                        normalized.append(item)
+                params["modifications"] = normalized
+
+        # process_payment_adjustment: Claude sends direction/destination,
+        # implementation expects target_id/target_type
+        if tool_name == "process_payment_adjustment":
+            if "direction" in params and "target_id" not in params:
+                params["target_id"] = params.pop("direction")
+            if "destination" in params and "target_type" not in params:
+                params["target_type"] = params.pop("destination")
+
+        # Generic: any modify_*/update_* tool where Claude sends item_id but we need id
+        if (
+            any(tool_name.startswith(v) for v in ("modify_", "update_"))
+            and "item_id" in params
+            and "id" not in params
+        ):
+            params["id"] = params.pop("item_id")
+
+        return params
+
+    def _patch_tool_schemas(self, tools: list) -> list:
+        """
+        Override slim/incorrect MCP tool schemas with correct parameter names
+        so Claude sends the right params in the first place.
+        """
+        import copy
+        patched = []
+        for tool in tools:
+            name = tool.get("name", "")
+            if name == "modify_order_items":
+                t = copy.deepcopy(tool)
+                try:
+                    props = t["input_schema"]["properties"]
+                    if "modifications" in props:
+                        items_schema = props["modifications"].get("items", {})
+                        item_props = items_schema.get("properties", {})
+                        # item_id → id
+                        if "item_id" in item_props and "id" not in item_props:
+                            item_props["id"] = item_props.pop("item_id")
+                        # price → unit_price
+                        if "price" in item_props and "unit_price" not in item_props:
+                            item_props["unit_price"] = {
+                                "type": "number",
+                                "description": "Unit price for this item",
+                            }
+                            del item_props["price"]
+                except (KeyError, TypeError):
+                    pass
+                patched.append(t)
+            else:
+                patched.append(tool)
+        return patched
+
+
     async def run(
         self,
         task_text: str,
@@ -195,6 +279,7 @@ class MiniAIWorker:
         # Zero API cost — reads from tool_registry.json.
         registered = load_registered_tools()
         self._tools = self._tools + registered
+        self._tools = self._patch_tool_schemas(self._tools)  # fix slim MCP schemas before Claude sees them
 
         # Detect computation gaps + synthesize missing tools.
         # Phase 1 (regex): max 3 new tools per task (cost guard). Haiku call, 10s timeout each.
@@ -346,6 +431,7 @@ class MiniAIWorker:
             # Zero MCP round-trip, exact Decimal precision.
             if is_registered_tool(tool_name):
                 return call_registered_tool(tool_name, params)
+            params = self._normalize_tool_params(tool_name, params)  # fix Claude param name mismatches
             try:
                 return await call_tool(self._ep, tool_name, params, self.session_id)
             except Exception as e:
