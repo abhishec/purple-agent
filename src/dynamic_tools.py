@@ -21,7 +21,7 @@ STATIC FSM (everyone else):
   - Fallback to 5-state "general" for anything new
   - Per-state instructions like "gather data" (useless)
 
-DYNAMIC FSM (what we built in Wave 13):
+DYNAMIC FSM:
   - Unknown process type → Haiku synthesizes the right state sequence
     AND writes specific instructions per state
   - SUPPLIER_RISK_ASSESSMENT gets: "gather credit rating, ESG score,
@@ -33,7 +33,7 @@ THIS FILE extends the same principle to TOOLS:
 STATIC TOOLS (what everyone else does):
   - Hardcode 7 finance functions → ship in the image → never grows
 
-DYNAMIC TOOLS (Wave 14):
+DYNAMIC TOOLS:
   - Detect when the task needs math that no tool handles
   - Synthesize a Python implementation via Haiku
   - Validate against auto-generated test cases
@@ -110,7 +110,7 @@ _SANDBOX_GLOBALS: dict[str, Any] = {
     "math": math,
     "Decimal": Decimal,
     "ROUND_HALF_UP": ROUND_HALF_UP,
-    # Wave 15: Monte Carlo + statistical simulation support
+    # Monte Carlo + statistical simulation support
     "random": random,
     "statistics": _statistics_module,
     # Safe builtins restored individually
@@ -241,7 +241,7 @@ _GAP_PATTERNS: list[dict] = [
         ],
         "description": "Loan amortization schedule — seeded at startup, not re-synthesized.",
     },
-    # ── Wave 15: Monte Carlo + numerical methods ────────────────────────────
+    # ── Monte Carlo + numerical methods ─────────────────────────────────────
     {
         "key": "finance_monte_carlo",
         "patterns": [
@@ -327,7 +327,7 @@ _GAP_PATTERNS: list[dict] = [
             "'details' with iterations, converged (bool), npv_at_result."
         ),
     },
-    # ── Wave 16: HR / Payroll ────────────────────────────────────────────────
+    # ── HR / Payroll ──────────────────────────────────────────────────────────
     {
         "key": "hr_overtime",
         "patterns": [
@@ -396,7 +396,7 @@ _GAP_PATTERNS: list[dict] = [
             "fte_part_time, annualized_attrition_rate_pct."
         ),
     },
-    # ── Wave 16: SLA / Operations ────────────────────────────────────────────
+    # ── SLA / Operations ──────────────────────────────────────────────────────
     {
         "key": "ops_sla_credit",
         "patterns": [
@@ -450,7 +450,7 @@ _GAP_PATTERNS: list[dict] = [
             "uncapped_penalty, capped_at, penalty_rate_used, days_late."
         ),
     },
-    # ── Wave 16: Supply Chain ────────────────────────────────────────────────
+    # ── Supply Chain ────────────────────────────────────────────────────────
     {
         "key": "sc_eoq",
         "patterns": [
@@ -502,7 +502,7 @@ _GAP_PATTERNS: list[dict] = [
             "expected_demand_during_lead_time, safety_stock_implied."
         ),
     },
-    # ── Wave 16: Date / Time Math ────────────────────────────────────────────
+    # ── Date / Time Math ────────────────────────────────────────────────────
     {
         "key": "dt_business_days",
         "patterns": [
@@ -559,7 +559,7 @@ _GAP_PATTERNS: list[dict] = [
             "each as {'count': int, 'amount': float}, total_outstanding."
         ),
     },
-    # ── Wave 16: Statistics ──────────────────────────────────────────────────
+    # ── Statistics ────────────────────────────────────────────────────────────
     {
         "key": "stats_zscore",
         "patterns": [
@@ -609,7 +609,7 @@ _GAP_PATTERNS: list[dict] = [
             "predict_next (predicted y for x = last_x + 1)."
         ),
     },
-    # ── Wave 16: Tax ─────────────────────────────────────────────────────────
+    # ── Tax ──────────────────────────────────────────────────────────────────
     {
         "key": "tax_vat",
         "patterns": [
@@ -660,7 +660,7 @@ _GAP_PATTERNS: list[dict] = [
             "total_allowances, final_tax_base."
         ),
     },
-    # ── Wave 16: Risk / Compliance ────────────────────────────────────────────
+    # ── Risk / Compliance ────────────────────────────────────────────────────
     {
         "key": "risk_weighted_score",
         "patterns": [
@@ -698,7 +698,7 @@ _GAP_PATTERNS: list[dict] = [
             "shares_pct (list)."
         ),
     },
-    # ── Wave 16: AR / Collections ─────────────────────────────────────────────
+    # ── AR / Collections ──────────────────────────────────────────────────────
     {
         "key": "ar_bad_debt",
         "patterns": [
@@ -736,7 +736,7 @@ _GAP_PATTERNS: list[dict] = [
             "revenue_per_day."
         ),
     },
-    # ── Wave 16: Contract Math ────────────────────────────────────────────────
+    # ── Contract Math ────────────────────────────────────────────────────────
     {
         "key": "contract_escalation",
         "patterns": [

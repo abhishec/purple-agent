@@ -38,9 +38,9 @@ Comprehensive layer-by-layer verification of the message flow system:
 |-----------|--------|---------|
 | L2_mutation_verifier | PASS | Write-tool detection for HITL gates |
 | L2_recovery | PASS | Recovery wrapper for tool call failures |
-| L2_schema | PASS | Fuzzy column matching (Wave 21 fix) |
+| L2_schema | PASS | Fuzzy column matching |
 | L2_bandit | PASS | UCB1 strategy selection (FSM/five_phase/MoA) |
-| L2_compute_verifier | PASS | Bracket/prose output validation (Wave 22) |
+| L2_compute_verifier | PASS | Bracket/prose output validation |
 | L2_reflection | PASS | Self-reflection with bracket confidence = 1.0 |
 | L2_output_validator | PASS | Output format validation (bracket preservation) |
 | L2_structured_output | PASS | Bracket persistence through policy gates |
@@ -62,7 +62,7 @@ Comprehensive layer-by-layer verification of the message flow system:
 
 ## Bug Fixed During Audit
 
-### Wave 22: classify_tool Compute Priority (CRITICAL)
+### classify_tool Compute Priority (CRITICAL)
 **File**: `/tmp/purple-agent/src/hitl_guard.py`  
 **Issue**: Compute-class tools (calculate_*, compute_*, estimate_*) were classified as "read" because _READ_PREFIXES contained compute patterns and was checked first.  
 **Impact**: Blocked tools list missing compute tools at APPROVAL_GATE.  

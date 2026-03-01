@@ -7,7 +7,7 @@ States: DECOMPOSE → ASSESS → COMPUTE → POLICY_CHECK → APPROVAL_GATE
         → MUTATE → SCHEDULE_NOTIFY → COMPLETE
 Error paths: ESCALATE, FAILED
 
-Key upgrades over Wave 2:
+Key upgrades over original design:
 - COMPUTE state: run financial calculations BEFORE policy check (no tools, pure math)
 - MUTATE replaces EXECUTE: semantically explicit — this is where state changes happen
 - SCHEDULE_NOTIFY: send notifications AFTER mutations, not mixed in with them
@@ -227,7 +227,7 @@ class FSMRunner:
         session_id: str,
         process_type: str | None = None,
         checkpoint=None,
-        definition: dict | None = None,  # Wave 13: synthesized FSM definition for novel types
+        definition: dict | None = None,  # synthesized FSM definition for novel types
     ):
         ptype = process_type or detect_process_type(task_text)
         self.ctx = FSMContext(task_text=task_text, session_id=session_id, process_type=ptype)
@@ -238,7 +238,7 @@ class FSMRunner:
             ptype_c = checkpoint.process_type
             self.ctx.process_type = ptype_c
 
-            # Wave 13: on checkpoint restore, look up synthesized definition from cache
+            # on checkpoint restore, look up synthesized definition from cache
             # if this was a novel type (not in PROCESS_TEMPLATES)
             if definition is None and ptype_c not in PROCESS_TEMPLATES:
                 try:
@@ -388,7 +388,7 @@ class FSMRunner:
             ),
         }
 
-        # Wave 13: synthesized definition instructions take priority (process-specific)
+        # synthesized definition instructions take priority (process-specific)
         # Fall back to hardcoded instructions for known built-in process types
         synth_instruction = None
         if self._definition:

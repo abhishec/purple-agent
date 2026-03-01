@@ -54,7 +54,7 @@ async def test_compute_verifier_bracket():
 
 asyncio.run(test_compute_verifier_bracket())
 
-# ─── 4. Self-reflection bracket fast-path (Wave 22 fix) ─────────────────────
+# ─── 4. Self-reflection bracket fast-path ────────────────────────────────────
 from src.self_reflection import reflect_on_answer, should_improve
 
 async def test_reflection_bracket():
@@ -155,10 +155,10 @@ def test_policy_precedence():
 
 test_policy_precedence()
 
-# ─── 11. Schema adapter fires for "column not found" (Wave 21 fix) ───────────
+# ─── 11. Schema adapter fires for "column not found" ────────────────────────
 from src.schema_adapter import resilient_tool_call
 
-async def test_schema_wave21_fix():
+async def test_schema_fix():
     """Verify has_error fires for non-'error'-containing error messages."""
     calls = []
 
@@ -181,11 +181,11 @@ async def test_schema_wave21_fix():
     # After fix: error message "column 'foo' not found" triggers correction path
     # Schema correction must have attempted → at least 2 tool calls
     correction_attempted = len(calls) >= 2
-    check("Schema Wave 21: 'column not found' triggers schema correction",
+    check("Schema: 'column not found' triggers schema correction",
           correction_attempted,
           f"calls made: {len(calls)} — {[c[0] for c in calls]}")
 
-asyncio.run(test_schema_wave21_fix())
+asyncio.run(test_schema_fix())
 
 # ─── 12. Proration integer-cent precision ───────────────────────────────────
 from src.financial_calculator import prorated_amount

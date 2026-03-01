@@ -304,7 +304,7 @@ async def quick_synthesize(task_text: str, system_prompt: str) -> str:
     return answer
 
 
-# ── Wave 15: Numeric MoA — dual top_p for tool-result tasks ──────────────────
+# ── Numeric MoA — dual top_p for tool-result tasks ───────────────────────────
 #
 # Problem: existing quick_synthesize only runs when tool_count == 0.
 # Numeric tasks (amortization, NPV, invoice reconciliation) use tools
@@ -338,7 +338,7 @@ async def numeric_moa_synthesize(
     system_context: str = "",
 ) -> str:
     """
-    Wave 15: Dual-path verification MoA for numeric/financial task answers.
+    Dual-path verification MoA for numeric/financial task answers.
     Runs two Haiku interpretations of the answer in parallel, synthesizes the best.
 
     Args:

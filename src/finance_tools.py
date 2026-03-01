@@ -2,7 +2,7 @@
 finance_tools.py
 Financial computation support — context injection only.
 
-Wave 14: The amortization synthetic tool has been migrated to dynamic_tools.py
+The amortization synthetic tool has been migrated to dynamic_tools.py
 (seeded into tool_registry.json at startup). This file now contains ONLY the
 context injection pattern — zero synthetic tool definitions.
 

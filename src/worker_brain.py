@@ -42,27 +42,27 @@ from src.hitl_guard import check_approval_gate          # Gap 1
 from src.paginated_tools import paginated_fetch          # Gap 2
 from src.document_generator import build_approval_brief  # Gap 3
 from src.config import GREEN_AGENT_MCP_URL
-from src.smart_classifier import classify_process_type   # Wave 8: LLM routing
-from src.knowledge_extractor import get_relevant_knowledge, extract_and_store  # Wave 8
-from src.entity_extractor import get_entity_context, record_task_entities       # Wave 8
-from src.recovery_agent import wrap_with_recovery                               # Wave 8
-from src.self_reflection import reflect_on_answer, build_improvement_prompt, should_improve  # Wave 9
-from src.output_validator import validate_output, get_missing_fields_prompt              # Wave 9
-from src.self_moa import quick_synthesize as moa_quick                                   # Wave 10
-from src.five_phase_executor import five_phase_execute, should_use_five_phase            # Wave 10
-from src.finance_tools import build_finance_context                                           # Wave 10: context injection (no more synthetic tool defs here)
-from src.context_rl import check_context_accuracy, record_context_outcome                    # Wave 12: RL drift detection
-from src.dynamic_fsm import synthesize_if_needed, is_known_type                              # Wave 13: dynamic FSM for novel process types
-from src.dynamic_tools import (                                                               # Wave 14: runtime tool factory
+from src.smart_classifier import classify_process_type   # LLM routing
+from src.knowledge_extractor import get_relevant_knowledge, extract_and_store
+from src.entity_extractor import get_entity_context, record_task_entities
+from src.recovery_agent import wrap_with_recovery
+from src.self_reflection import reflect_on_answer, build_improvement_prompt, should_improve
+from src.output_validator import validate_output, get_missing_fields_prompt
+from src.self_moa import quick_synthesize as moa_quick
+from src.five_phase_executor import five_phase_execute, should_use_five_phase
+from src.finance_tools import build_finance_context                                           # context injection
+from src.context_rl import check_context_accuracy, record_context_outcome                    # RL drift detection
+from src.dynamic_fsm import synthesize_if_needed, is_known_type                              # dynamic FSM for novel process types
+from src.dynamic_tools import (                                                               # runtime tool factory
     load_registered_tools, is_registered_tool, call_registered_tool,
     detect_tool_gaps, synthesize_and_register,
-    detect_tool_gaps_llm,                                                                     # Wave 16: LLM-based phase-2 gap detection
+    detect_tool_gaps_llm,                                                                     # LLM-based phase-2 gap detection
 )
-from src.mutation_verifier import MutationVerifier                                            # Wave 14: write-track + WAL flush + LLM judge log
-from src.strategy_bandit import select_strategy, record_outcome as bandit_record               # Wave 15: UCB1 strategy bandit
-from src.compute_verifier import verify_compute_output                                         # Wave 15: COMPUTE math reflection gate
-from src.context_pruner import prune_case_log, prune_rl_primer                                 # Wave 15: context rot pruning
-from src.self_moa import numeric_moa_synthesize                                                # Wave 15: dual top_p MoA for numeric tasks
+from src.mutation_verifier import MutationVerifier                                            # write-track + WAL flush + LLM judge log
+from src.strategy_bandit import select_strategy, record_outcome as bandit_record               # UCB1 strategy bandit
+from src.compute_verifier import verify_compute_output                                         # COMPUTE math reflection gate
+from src.context_pruner import prune_case_log, prune_rl_primer                                 # context rot pruning
+from src.self_moa import numeric_moa_synthesize                                                # dual top_p MoA for numeric tasks
 
 
 def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
@@ -135,7 +135,7 @@ class MiniAIWorker:
             return {"refused": True, "message": privacy["message"]}
 
         # RL primer (learned patterns from past tasks)
-        # Wave 15: context rot pruning — filter stale/low-quality entries before injection
+        # Context rot pruning — filter stale/low-quality entries before injection
         rl_primer = build_rl_primer(task_text)
         if rl_primer:
             rl_primer = prune_rl_primer(rl_primer)   # text-level stale marker removal
@@ -149,14 +149,14 @@ class MiniAIWorker:
                 self.budget.consume(multi_turn_ctx, "session_context")
 
         # FSM — restore checkpoint or start fresh
-        # Wave 8: use LLM classifier for accurate process type detection
+        # Use LLM classifier for accurate process type detection
         checkpoint = get_fsm_checkpoint(self.session_id)
         if not checkpoint:
             process_type, _cls_conf = await classify_process_type(task_text)
         else:
             process_type = None   # checkpoint already has process_type
 
-        # Wave 13: dynamic FSM synthesis for novel process types
+        # Dynamic FSM synthesis for novel process types
         # If the classified type has no built-in definition, synthesize one via Haiku.
         # One synthesis per new process type — all subsequent tasks get cached definition.
         synth_definition = None
@@ -171,7 +171,7 @@ class MiniAIWorker:
             session_id=self.session_id,
             process_type=process_type,
             checkpoint=checkpoint,
-            definition=synth_definition,  # Wave 13: synthesized or None
+            definition=synth_definition,  # synthesized or None
         )
         phase_prompt = fsm.build_phase_prompt()
         self.budget.consume(phase_prompt, "fsm_phase")
@@ -190,15 +190,15 @@ class MiniAIWorker:
         except Exception:
             self._tools = []
 
-        # Wave 14: load dynamic tool registry (includes seeded amortization + any
+        # Load dynamic tool registry (includes seeded amortization + any
         # tools synthesized in prior tasks of this benchmark run).
         # Zero API cost — reads from tool_registry.json.
         registered = load_registered_tools()
         self._tools = self._tools + registered
 
-        # Wave 14: detect computation gaps + synthesize missing tools.
+        # Detect computation gaps + synthesize missing tools.
         # Phase 1 (regex): max 3 new tools per task (cost guard). Haiku call, 10s timeout each.
-        # Wave 16 Phase 2 (LLM): if Phase 1 finds nothing and task is >= 100 chars,
+        # Phase 2 (LLM): if Phase 1 finds nothing and task is >= 100 chars,
         # ask Haiku to identify custom math needs. Max 2 LLM-detected gaps, 8s timeout.
         # Synthesized tools are immediately available for this task and all future tasks.
         gaps = detect_tool_gaps(task_text, self._tools)
@@ -225,7 +225,7 @@ class MiniAIWorker:
             process_type=fsm.process_type,
         )
 
-        # Wave 8: knowledge base + entity memory injection
+        # Knowledge base + entity memory injection
         kb_context = get_relevant_knowledge(task_text, fsm.process_type)
         entity_ctx = get_entity_context(task_text)
         if kb_context:
@@ -243,7 +243,7 @@ class MiniAIWorker:
         context_parts = [
             f"## MiniAIWorker | Task: {task_id} | Session: {self.session_id}",
             f"Tools endpoint: {self._ep}",
-            # Wave 23: explicit autonomy directive — prevents Haiku from stalling
+            # Explicit autonomy directive — prevents Haiku from stalling
             # the task with clarifying questions on simple mutations like
             # "change shirt, exchange jeans" where no keywords trigger Sonnet.
             "DIRECTIVE: Never ask the user clarifying questions. "
@@ -280,7 +280,7 @@ class MiniAIWorker:
             "system_context": system_context,
             "gate_fires": gate_fires,
             "rl_primer": rl_primer,
-            "finance_ctx": finance_ctx,   # Wave 12: stored for REFLECT accuracy check
+            "finance_ctx": finance_ctx,   # stored for REFLECT accuracy check
         }
 
     # ── EXECUTE ───────────────────────────────────────────────────────────
@@ -297,13 +297,13 @@ class MiniAIWorker:
 
         add_turn(self.session_id, "user", task_text)
 
-        # Wave 24: primary execution always Sonnet unless budget >80% (Haiku can't handle complex tasks)
+        # Primary execution always Sonnet unless budget >80% (Haiku can't handle complex tasks)
         _exec_model = self.budget.get_model(fsm.current_state.value, task_text)
         model = _exec_model if self.budget.pct >= 0.80 else MODELS["sonnet"]
         max_tokens = self.budget.get_max_tokens(fsm.current_state.value)
 
         # Schema-resilient tool call wrapper (Gap 2 + schema_adapter combined)
-        # Wave 8: wrapped with recovery agent for auto-retry on failure
+        # Wrapped with recovery agent for auto-retry on failure
         schema_cache = get_schema_cache(self.session_id)
 
         async def _base_tool_call(tool_name: str, params: dict) -> dict:
@@ -314,7 +314,7 @@ class MiniAIWorker:
 
         on_tool_call_inner = wrap_with_recovery(_base_tool_call, available_tools=self._tools)
 
-        # Wave 14: wrap with MutationVerifier — tracks writes, does read-back to force
+        # Wrap with MutationVerifier — tracks writes, does read-back to force
         # SQLite WAL checkpoint, builds mutation log for LLM judge scoring
         verifier = MutationVerifier(on_tool_call_inner)
         on_tool_call = verifier.call
@@ -342,7 +342,7 @@ class MiniAIWorker:
                     "confirmed": True,
                     "message": "CONFIRMED. Proceed immediately with all pending mutations now.",
                 }
-            # Wave 14: registered tools (amortization + synthesized) run locally.
+            # Registered tools (amortization + synthesized) run locally.
             # Zero MCP round-trip, exact Decimal precision.
             if is_registered_tool(tool_name):
                 return call_registered_tool(tool_name, params)
@@ -371,7 +371,7 @@ class MiniAIWorker:
         except Exception:  # Catch ALL failures: BrainOS down, network error, empty response
             if not self.budget.should_skip_llm:
                 try:
-                    # Wave 15: UCB1 bandit selects strategy based on past outcomes per process type
+                    # UCB1 bandit selects strategy based on past outcomes per process type
                     strategy = select_strategy(fsm.process_type, task_text)
 
                     if strategy == "five_phase" or (strategy == "fsm" and await should_use_five_phase(task_text, 0)):
@@ -406,7 +406,7 @@ class MiniAIWorker:
             else:
                 answer = "Token budget exhausted. Task incomplete."
 
-        # Wave 15: COMPUTE math reflection gate — catch arithmetic errors before MUTATE
+        # COMPUTE math reflection gate — catch arithmetic errors before MUTATE
         # Runs a fast Haiku critique of any numeric values in the answer.
         # Run BEFORE mutation log append so corrections don't discard log.
         if answer and not error and not self.budget.should_skip_llm:
@@ -434,7 +434,7 @@ class MiniAIWorker:
             except Exception:
                 pass  # never block execution for verification failures
 
-        # Wave 15: Numeric MoA — dual top_p synthesis for financial answer validation
+        # Numeric MoA — dual top_p synthesis for financial answer validation
         # Runs when the answer has tool results (data-driven) + numeric content.
         # Run BEFORE mutation log append so replacement doesn't lose the log.
         if (answer and not error and not _brainos_handled
@@ -471,7 +471,7 @@ class MiniAIWorker:
             )
             answer = brief
 
-        # Wave 9: output validation — check required fields are present
+        # Output validation — check required fields are present
         if answer and not error:
             validation = validate_output(answer, fsm.process_type)
             if not validation["valid"] and validation["missing"]:
@@ -497,7 +497,7 @@ class MiniAIWorker:
                     except Exception:
                         pass
 
-        # Wave 9: self-reflection — score answer + improve if < threshold
+        # Self-reflection — score answer + improve if < threshold
         if answer and not error and not self.budget.should_skip_llm and not answer.strip().startswith("["):
             reflection = await reflect_on_answer(
                 task_text=task_text,
@@ -535,7 +535,7 @@ class MiniAIWorker:
                 except Exception:
                     pass
 
-        # Wave 10: MoA synthesis — dual top_p for pure-reasoning tasks.
+        # MoA synthesis — dual top_p for pure-reasoning tasks.
         # Skip if: BrainOS handled it (already synthesized), tools were used (data-dependent),
         # or budget is exhausted. Never run on bracket-format exact_match answers.
         if (answer and not error and not _brainos_handled
@@ -555,7 +555,7 @@ class MiniAIWorker:
             except Exception:
                 pass  # MoA is best-effort — never fail the task for it
 
-        # Wave 14: append mutation verification log LAST — after all answer processing.
+        # Append mutation verification log LAST — after all answer processing.
         # This ensures MoA, COMPUTE correction, and reflection passes cannot discard it.
         # The log forces SQLite WAL checkpoint via read-backs and provides LLM judge evidence.
         # Never append to bracket-format answers (exact_match targets) — would corrupt score.
@@ -610,18 +610,18 @@ class MiniAIWorker:
             domain=fsm.process_type,
         )
 
-        # Wave 15: UCB1 bandit outcome — feed quality back to strategy bandit
+        # UCB1 bandit outcome — feed quality back to strategy bandit
         strategy_used = context.get("_strategy_used", "fsm")
         bandit_record(fsm.process_type, strategy_used, quality)
 
-        # Wave 12: context RL — check if pre-computed finance facts matched the answer
+        # Context RL — check if pre-computed finance facts matched the answer
         finance_ctx_for_check = context.get("finance_ctx", "")
         if finance_ctx_for_check and answer and not error:
             accuracy_results = check_context_accuracy(finance_ctx_for_check, answer, fsm.process_type)
             for ctx_type, was_match in accuracy_results:
                 record_context_outcome(fsm.process_type, ctx_type, was_match)
 
-        # Wave 8: extract knowledge + entities in background (fire-and-forget)
+        # Extract knowledge + entities in background (fire-and-forget)
         asyncio.ensure_future(
             extract_and_store(task_text, answer, fsm.process_type, quality)
         )

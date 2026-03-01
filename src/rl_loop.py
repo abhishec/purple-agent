@@ -77,7 +77,7 @@ def _extract_keywords(text: str) -> list[str]:
 
 def score_quality(answer: str, tool_count: int, policy_passed: bool | None) -> float:
     """
-    Quality score 0–1. Ported from BrainOS computeAgentQuality() Wave 9.
+    Quality score 0–1. Ported from BrainOS computeAgentQuality().
     Conservative baseline 0.5 (matches BrainOS), then adjust by signals.
 
     Penalizes:

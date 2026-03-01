@@ -1,5 +1,5 @@
 """
-compute_verifier.py  — Wave 15
+compute_verifier.py  — Compute Math Reflection Gate
 Self-reflection gate after COMPUTE state.
 
 Inspired by BrainOS platform/lib/brain/five-phase-executor.ts explicit phase validation.

@@ -46,7 +46,7 @@ async def on_startup():
     from the first task (not just after the first benchmark round).
     Non-blocking — agent serves requests immediately; seed runs in background thread.
     """
-    # Wave 14: seed the amortization tool into the dynamic tool registry.
+    # Seed the amortization tool into the dynamic tool registry.
     # This migrates it from hardcoded finance_tools.py to the persistent registry.
     # All future tasks get it from the registry — zero hardcoded tools remaining.
     seed_amortization_tool()
@@ -208,7 +208,7 @@ async def rl_status():
     except Exception:
         pass
 
-    # Context injection quality stats (Wave 12)
+    # Context injection quality stats
     ctx_stats: dict = {}
     try:
         ctx_stats = get_context_stats()
@@ -225,9 +225,9 @@ async def rl_status():
         "knowledge_base": kb_stats,
         "entity_memory": entity_stats,
         "context_rl": ctx_stats,                # per-process confidence + drift alerts
-        "dynamic_fsm": get_synthesis_stats(),   # Wave 13: novel FSM type synthesis cache
-        "dynamic_tools": get_tool_registry_stats(),  # Wave 14: runtime tool factory stats
-        "strategy_bandit": get_bandit_stats(),   # Wave 15: UCB1 strategy learning
+        "dynamic_fsm": get_synthesis_stats(),   # novel FSM type synthesis cache
+        "dynamic_tools": get_tool_registry_stats(),  # runtime tool factory stats
+        "strategy_bandit": get_bandit_stats(),   # UCB1 strategy learning
     }
 
 

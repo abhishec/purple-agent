@@ -1,5 +1,5 @@
 """
-context_pruner.py  — Wave 15
+context_pruner.py  — Context Rot Pruning
 Context rot pruning for RL case log + knowledge base.
 
 Inspired by BrainOS platform/lib/brain/schema-drift-handler.ts filterContextRot().

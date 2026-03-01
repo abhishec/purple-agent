@@ -1,5 +1,5 @@
 """
-strategy_bandit.py  — Wave 15
+strategy_bandit.py  — UCB1 Strategy Bandit
 UCB1 multi-armed bandit for FSM strategy selection.
 
 Inspired by BrainOS packages/memory-stack/src/causality/causal-method-bandit.ts.
