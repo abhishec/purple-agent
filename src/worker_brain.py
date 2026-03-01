@@ -574,7 +574,7 @@ class MiniAIWorker:
         execute_prompt = (
             "PHASE 2 — EXECUTE: Data has been gathered. NOW call EVERY required "
             "action tool to complete the task.\n\n"
-            f"DATA COLLECTED IN PHASE 1:\n{(gathered or 'No data collected')[:3000]}\n\n"
+            f"DATA COLLECTED IN PHASE 1:\n{(gathered or 'No data collected')[:5000]}\n\n"
             f"ORIGINAL TASK: {task_text[:800]}\n\n"
             "EXECUTE the required mutations. Do NOT re-read. Call the action tools "
             "NOW and provide a complete summary of what was done and the outcomes."
