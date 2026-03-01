@@ -49,6 +49,13 @@ _WRITE_VERBS = frozenset({
     "notify", "schedule", "escalate", "draft", "trigger", "execute",
     "suspend", "terminate", "migrate", "provision", "deprovision",
     "remediate", "offboard", "onboard", "rotate", "revoke",
+    # Business-process mutation verbs — critical for competition tasks
+    "modify",   # e.g. modify_order_items, modify_lease_terms
+    "adjust",   # e.g. adjust_payment, adjust_balance
+    "void",     # e.g. void_invoice, void_transaction
+    "reverse",  # e.g. reverse_transaction
+    "amend",    # e.g. amend_contract
+    "patch",    # e.g. patch_record
 })
 
 # These verb prefixes reliably identify read operations (skip these for write detection)
@@ -98,6 +105,13 @@ _WRITE_TO_READ_VERB: dict[str, str] = {
     "lock": "get",
     "enable": "get",
     "disable": "get",
+    # Business-process mutation verbs
+    "modify": "get",
+    "adjust": "get",
+    "void": "get",
+    "reverse": "get",
+    "amend": "get",
+    "patch": "get",
 }
 
 
