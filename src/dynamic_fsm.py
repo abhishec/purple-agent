@@ -111,10 +111,14 @@ Return JSON with exactly this schema:
   }}
 }}"""
 
-_VALID_STATES = frozenset({
-    "DECOMPOSE", "ASSESS", "COMPUTE", "POLICY_CHECK",
-    "APPROVAL_GATE", "MUTATE", "SCHEDULE_NOTIFY", "COMPLETE",
-})
+def _get_valid_states() -> frozenset:
+    """Generate _VALID_STATES from FSMState enum — stays in sync automatically when new states are added."""
+    from src.fsm_runner import FSMState
+    _TERMINAL = {"ESCALATE", "FAILED"}
+    return frozenset(s.value for s in FSMState if s.value not in _TERMINAL)
+
+# Called once at module load, cached
+_VALID_STATES = _get_valid_states()
 
 
 # ── Response parsing ────────────────────────────────────────────────────────

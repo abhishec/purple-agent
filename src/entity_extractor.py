@@ -58,6 +58,41 @@ _STOP_TITLES = {
 }
 
 
+
+def _infer_entity_type_from_context(entity_text: str, surrounding_text: str) -> str:
+    """Infer entity type from how the entity is used in context — no API call."""
+    context_lower = surrounding_text.lower()
+
+    # Person signals: appears after person-role verbs or in from:/to:/by: positions
+    _PERSON_CONTEXT = [
+        "submitted by", "approved by", "assigned to", "managed by", "reported by",
+        "reviewed by", "from:", "to:", "cc:", "contact:", "employee:", "manager:",
+        "requested by", "authorized by", "emailed by", "signed by",
+    ]
+    if any(signal in context_lower for signal in _PERSON_CONTEXT):
+        return "person"
+
+    # Two capitalized words (First Last) without company suffixes = likely person
+    if re.match(r'^[A-Z][a-z]+\s+[A-Z][a-z]+$', entity_text):
+        # Check it's not preceded by company context
+        _COMPANY_CONTEXT = ["vendor", "supplier", "client", "company", "corp", "inc", "ltd"]
+        if not any(signal in context_lower for signal in _COMPANY_CONTEXT):
+            return "person"
+
+    # Location signals
+    _LOCATION_SIGNALS = ["office in", "based in", "located in", "headquarters", "branch at", "region:"]
+    if any(signal in context_lower for signal in _LOCATION_SIGNALS):
+        return "location"
+
+    # Product/system signals
+    _PRODUCT_CONTEXT = ["system", "platform", "software", "tool", "application", "license", "subscription"]
+    if any(signal in context_lower for signal in _PRODUCT_CONTEXT):
+        return "product"
+
+    # Default: vendor (unchanged for ambiguous cases)
+    return "vendor"
+
+
 def extract_entities(text: str, domain: str = "general") -> list[EntityRecord]:
     """Extract all entities from text. Returns list of EntityRecord objects."""
     import hashlib
@@ -95,12 +130,14 @@ def extract_entities(text: str, domain: str = "general") -> list[EntityRecord]:
         if eid not in found:
             ctx_start = max(0, m.start() - 25)
             ctx_end = min(len(text), m.end() + 25)
+            surrounding = text[ctx_start:ctx_end].replace("\n", " ")
+            entity_type = _infer_entity_type_from_context(raw, surrounding)
             found[eid] = EntityRecord(
                 entity_id=eid,
-                entity_type="vendor",   # assume proper noun = vendor/org
+                entity_type=entity_type,
                 raw_value=raw,
                 normalized=raw,
-                context=text[ctx_start:ctx_end].replace("\n", " "),
+                context=surrounding,
                 domain=domain,
             )
 
