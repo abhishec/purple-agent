@@ -16,7 +16,7 @@ from src.session_context import (
 )
 from src.fsm_runner import FSMRunner
 from src.privacy_guard import check_privacy
-from src.token_budget import TokenBudget, format_competition_answer
+from src.token_budget import TokenBudget, format_competition_answer, _is_bracket_format
 from src.schema_adapter import resilient_tool_call
 from src.config import GREEN_AGENT_MCP_URL
 
@@ -197,7 +197,7 @@ async def handle_task(
     duration_ms = int(time.time() * 1000) - start_ms
     fsm_summary = fsm.get_summary()
 
-    if fsm_summary.get("requires_hitl") and not answer.strip().startswith('['):
+    if fsm_summary.get("requires_hitl") and not _is_bracket_format(answer.strip()):
         answer += f"\n\n[Process: {fsm.process_type} | Human approval required]"
 
     return format_competition_answer(

@@ -451,15 +451,18 @@ def _params_summary(params: dict) -> str:
 def _result_summary(result: dict) -> str:
     """Compact summary of a tool result."""
     if not isinstance(result, dict):
-        return str(result)[:80]
+        return str(result)[:120]
     if "error" in result:
-        return f"ERROR: {str(result['error'])[:60]}"
+        return f"ERROR: {str(result['error'])[:80]}"
     # Look for a meaningful status or ID
     for key in ("status", "state", "id", "result", "message", "success"):
         if key in result:
-            return f"{key}={str(result[key])[:60]}"
+            val_str = str(result[key])
+            # Never truncate mid-JSON — bracket-format results must stay intact
+            return f"{key}={val_str}" if len(val_str) <= 120 else f"{key}={val_str[:120]}"
     # Generic: first non-None value
     for v in result.values():
         if v is not None:
-            return str(v)[:60]
+            val_str = str(v)
+            return val_str if len(val_str) <= 120 else val_str[:120]
     return "ok (empty response)"

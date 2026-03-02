@@ -575,7 +575,7 @@ class MiniAIWorker:
             "PHASE 2 — EXECUTE: Data has been gathered. NOW call EVERY required "
             "action tool to complete the task.\n\n"
             f"DATA COLLECTED IN PHASE 1:\n{(gathered or 'No data collected')[:5000]}\n\n"
-            f"ORIGINAL TASK: {task_text[:800]}\n\n"
+            f"ORIGINAL TASK: {task_text[:1200]}\n\n"
             "EXECUTE the required mutations. Do NOT re-read. Call the action tools "
             "NOW and provide a complete summary of what was done and the outcomes."
         )
@@ -809,7 +809,7 @@ class MiniAIWorker:
                     f"You gathered data but did not execute the required action.\n"
                     f"Available action tools: {', '.join(write_tool_names[:12])}\n\n"
                     f"DATA ALREADY GATHERED:\n{(answer or '')[:1500]}\n\n"
-                    f"Original task: {task_text[:800]}\n\n"
+                    f"Original task: {task_text[:1200]}\n\n"
                     f"Do NOT re-read any data. Call the required action tool NOW."
                 )
                 try:
@@ -856,7 +856,7 @@ class MiniAIWorker:
                             f"Task execution was incomplete. The following required tools "
                             f"were NOT called: {missed_tools_str}\n\n"
                             f"Data already gathered:\n{(answer or '')[:1200]}\n\n"
-                            f"Original task: {task_text[:800]}\n\n"
+                            f"Original task: {task_text[:1200]}\n\n"
                             f"Call ONLY the missing tools listed above. Do NOT re-read data."
                         )
                         _, _cov_write_tools = _split_tools_for_phases(self._tools)
@@ -938,7 +938,7 @@ class MiniAIWorker:
                     moa_numeric
                     and len(moa_numeric) > len(answer) * 0.8
                     and '?' not in moa_numeric[-100:]
-                    and not moa_numeric.strip().startswith('[')
+                    and not _is_bracket_format(moa_numeric.strip())
                 )
                 if _moa_numeric_ok:
                     answer = moa_numeric
@@ -947,7 +947,7 @@ class MiniAIWorker:
 
         # Gap 3: if we're at APPROVAL_GATE and answer looks thin, build a proper brief
         # Never replace bracket-format answers (exact_match targets) with a brief
-        if context.get("gate_fires") and answer and len(answer) < 200 and not answer.strip().startswith('['):
+        if context.get("gate_fires") and answer and len(answer) < 200 and not _is_bracket_format(answer.strip()):
             brief = build_approval_brief(
                 process_type=context["fsm"].process_type,
                 proposed_actions=[answer],
@@ -976,7 +976,7 @@ class MiniAIWorker:
                             max_tokens=512,
                             original_task_text=task_text,  # provide context for improvement pass
                         )
-                        if improved and len(improved) > 50 and not answer.strip().startswith("["):
+                        if improved and len(improved) > 50 and not _is_bracket_format(answer.strip()):
                             answer = answer + "\n\n" + improved
                             tool_count += extra_tools
                     except Exception:
@@ -987,7 +987,7 @@ class MiniAIWorker:
         # The reflection API call itself adds latency — if heuristic already says "good",
         # don't waste the Haiku call. The improvement pass is even more expensive.
         if (answer and not error and not self.budget.should_skip_llm
-                and not answer.strip().startswith("[")
+                and not _is_bracket_format(answer.strip())
                 and not _answer_is_good):  # L4: skip if already good
             reflection = await reflect_on_answer(
                 task_text=task_text,
@@ -1016,8 +1016,8 @@ class MiniAIWorker:
                         improved
                         and len(improved) > len(answer) * 0.8
                         and '?' not in improved[-100:]
-                        and not answer.strip().startswith('[')
-                        and not improved.strip().startswith('[')
+                        and not _is_bracket_format(answer.strip())
+                        and not _is_bracket_format(improved.strip())
                     )
                     if _reflect_ok:
                         answer = improved
@@ -1032,7 +1032,7 @@ class MiniAIWorker:
         # Sonnet answer adds noise, not value, and can regress score (task_07: 92→29).
         if (answer and not error
                 and tool_count == 0 and not self.budget.should_skip_llm
-                and not answer.strip().startswith('[')
+                and not _is_bracket_format(answer.strip())
                 and not _answer_is_good):  # L4: skip if Sonnet answer already good
             try:
                 moa_answer = await moa_quick(task_text, system_context)
@@ -1041,7 +1041,7 @@ class MiniAIWorker:
                     moa_answer
                     and len(moa_answer) > len(answer) * 0.6
                     and '?' not in moa_answer[-100:]
-                    and not moa_answer.strip().startswith('[')
+                    and not _is_bracket_format(moa_answer.strip())
                 )
                 if _moa_quick_ok:
                     answer = moa_answer
@@ -1141,7 +1141,7 @@ class MiniAIWorker:
         duration_ms = int(time.time() * 1000) - start_ms
         fsm_summary = fsm.get_summary()
 
-        if fsm_summary.get("requires_hitl") and not answer.strip().startswith('['):
+        if fsm_summary.get("requires_hitl") and not _is_bracket_format(answer.strip()):
             answer += f"\n\n[Process: {fsm.process_type} | Human approval required]"
 
         # format_final_answer was already applied in claude_executor.py (solve_with_claude).

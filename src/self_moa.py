@@ -23,6 +23,7 @@ from typing import NamedTuple
 import anthropic
 
 from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL
+from src.token_budget import _is_bracket_format
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -350,7 +351,8 @@ async def numeric_moa_synthesize(
     """
     # Bracket-format answers are exact_match targets — never run numeric MoA on them.
     # IDs like "INV-001" contain digits but are not financial calculations.
-    if initial_answer.strip().startswith('['):
+    # Use strict JSON-array check (not startswith('[')) per token_budget.py guidance.
+    if _is_bracket_format(initial_answer.strip()):
         return initial_answer
 
     # Only run for answers with actual financial numeric content
@@ -393,10 +395,10 @@ async def numeric_moa_synthesize(
 
     # Divergent — quick Haiku synthesis
     synth_user = (
-        f"ORIGINAL TASK:\n{task_text[:800]}\n\n"
+        f"ORIGINAL TASK:\n{task_text[:1200]}\n\n"
         f"INITIAL ANSWER:\n{initial_answer[:1000]}\n\n"
-        f"VERIFICATION VIEW:\n{verified[:600]}\n\n"
-        f"CHALLENGE VIEW:\n{challenged[:600]}\n\n"
+        f"VERIFICATION VIEW:\n{verified[:800]}\n\n"
+        f"CHALLENGE VIEW:\n{challenged[:800]}\n\n"
         "Produce a single correct, concise final answer:"
     )
     synth_system = (

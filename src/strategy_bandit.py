@@ -194,7 +194,7 @@ def select_strategy(process_type: str, task_text: str = "") -> str:
         data = arms[strategy]
         q = data["q"]
         n = data["n"]
-        ucb1 = q + _C * math.sqrt(math.log(max(N_total, 1)) / n)
+        ucb1 = q + _C * math.sqrt(math.log(max(N_total, 1)) / max(n, 1))
         if ucb1 > best_score:
             best_score = ucb1
             best_arm = strategy
