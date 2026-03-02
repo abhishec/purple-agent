@@ -30,6 +30,7 @@ from typing import NamedTuple
 import anthropic
 
 from src.config import ANTHROPIC_API_KEY
+from src.token_budget import _is_bracket_format
 
 _HAIKU = "claude-haiku-4-5-20251001"
 _TIMEOUT = 8.0   # seconds — tight budget, Haiku is fast
@@ -73,8 +74,10 @@ async def verify_compute_output(
     Fast-path: if answer has no numbers, or process type doesn't need it,
     returns clean result immediately (no API cost).
     """
-    # Fast-path: bracket-format = exact_match target, not a financial computation
-    if answer.strip().startswith('['):
+    # Fast-path: bracket-format = exact_match target, not a financial computation.
+    # Use strict JSON-array check (not startswith('[')) — prose like "[See below]..."
+    # must not skip verification.
+    if _is_bracket_format(answer.strip()):
         return ComputeVerifyResult(False, 0.95, [], "")
 
     # Fast-path: explicit exclusion — provably calculation-free process types
@@ -108,7 +111,7 @@ Respond with JSON only:
 Be concise. Only flag clear errors, not stylistic issues."""
 
     user_msg = (
-        f"TASK:\n{task_text[:800]}\n\n"
+        f"TASK:\n{task_text[:1200]}\n\n"
         f"AGENT ANSWER (excerpt):\n{answer[:1500]}\n\n"
         f"Key numbers found: {', '.join(numbers[:10])}\n\n"
         "Are the calculations correct? Return JSON."

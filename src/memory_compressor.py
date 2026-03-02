@@ -46,7 +46,7 @@ async def compress_history(messages: list[dict]) -> tuple[list[dict], str, int]:
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         history_text = "\n\n".join(
-            f"{'User' if m['role'] == 'user' else 'Assistant'}: {str(m.get('content', ''))[:600]}"
+            f"{'User' if m['role'] == 'user' else 'Assistant'}: {str(m.get('content', ''))[:1500]}"
             for m in middle
         )
         resp = await client.messages.create(
