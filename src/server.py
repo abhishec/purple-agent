@@ -130,39 +130,53 @@ async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
                         parsed = inner_parsed  # use the inner action directly
                 except Exception:
                     pass  # content is just text starting with '{'
-        # Booking pivot guardrail (state-machine approach):
-        # When the agent first asks about booking date/cabin → mark context as booking_pending.
-        # On subsequent respond()s that lack a date question and booking is still pending → inject pivot.
-        # Uses state per context so it NEVER fires on cancel/refund tasks (no false positives).
+        # Booking pivot guardrail (v3 — detect from agent's FIRST respond):
+        # The root problem: after get_user_details, the agent says "Now let me gather info
+        # for the booking:" (no date question), user immediately diverts to delay complaint,
+        # agent never asks about date again → booking never happens.
+        #
+        # Detection: the agent's VERY FIRST respond() says "help you book" or "book a flight"
+        # for booking tasks, and "cancel" for cancel tasks. No false positives.
+        # Injection: every subsequent respond() that lacks the date question gets it appended.
         if parsed.get("name") == "respond":
             _content = parsed.get("arguments", {}).get("content", "")
-            _booking_q_phrases = (
-                "what date", "which date", "departure date", "travel date", "travel on",
-                "when would you like to travel", "when would you like to fly",
-                "when do you want to fly", "when do you want to travel",
-                "when are you looking to travel", "when would you prefer to travel",
-                "when would you want to fly", "when would you want to travel",
-                "when are you planning to", "what day would you",
-                "what cabin class", "which cabin class", "preferred cabin",
-                "economy or business", "economy, premium", "business or economy",
-                "looking to fly on", "looking to travel on",
+            # Count previous respond() actions for this context (0 = this is the first respond)
+            _prev_responds = sum(
+                1 for m in _tau2_sessions[context_id]
+                if m.get("role") == "assistant"
+                and isinstance(m.get("content"), str)
+                and '"name": "respond"' in m.get("content", "")
             )
-            _is_booking_q = any(q in _content.lower() for q in _booking_q_phrases)
-            # Check if book_reservation has been called in this session
+            # Check if book_reservation has been called (booking complete)
             _already_booked = any(
                 isinstance(m.get("content"), str) and "book_reservation" in m.get("content", "")
                 for m in _tau2_sessions[context_id] if m.get("role") == "assistant"
             )
             if _already_booked:
                 _tau2_booking_pending[context_id] = False
-            elif _is_booking_q:
-                # Agent asked about booking details → mark pending
-                _tau2_booking_pending[context_id] = True
+            elif _prev_responds == 0:
+                # First respond: detect if this is a booking session (not cancel/refund)
+                _booking_intro = ("help you book", "book a flight", "booking a flight",
+                                  "help book", "assist you in booking")
+                if any(p in _content.lower() for p in _booking_intro):
+                    _tau2_booking_pending[context_id] = True
+                    print(f"[tau2] booking context detected for ctx={context_id[:8]}", flush=True)
             elif _tau2_booking_pending.get(context_id):
-                # Booking pending but this respond() lacks the date question → inject pivot
-                _pivot = " What date would you like to travel and what cabin class would you prefer for your booking?"
-                parsed["arguments"]["content"] = _content.rstrip() + _pivot
-                print(f"[tau2] booking pivot injected for ctx={context_id[:8]}", flush=True)
+                # Booking session is active — check if this respond already has the date question
+                _booking_q_phrases = (
+                    "what date", "which date", "departure date", "travel date",
+                    "when would you like to travel", "when would you like to fly",
+                    "when do you want to fly", "when do you want to travel",
+                    "when are you looking to travel", "when would you prefer to travel",
+                    "when would you want to fly", "when would you want to travel",
+                    "when are you planning to", "what day would you",
+                    "what cabin class", "which cabin class", "preferred cabin",
+                )
+                _has_date_q = any(q in _content.lower() for q in _booking_q_phrases)
+                if not _has_date_q:
+                    _pivot = " What date would you like to travel and what cabin class would you prefer?"
+                    parsed["arguments"]["content"] = _content.rstrip() + _pivot
+                    print(f"[tau2] booking pivot injected for ctx={context_id[:8]}", flush=True)
 
         answer = json.dumps(parsed)  # normalise whitespace
     except Exception:
