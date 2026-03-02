@@ -83,8 +83,12 @@ def detect_task_complexity(task_text: str) -> str:
 
     # Only shortcircuit if: clearly readonly AND no action verb whatsoever
     # AND the task text is short enough that we can be confident it's pure query.
-    # Longer tasks (> 120 chars) often have embedded action requirements not caught by regex.
-    if has_readonly and not has_action and len(task_text) <= 120:
+    # 120-char threshold: calibrated from benchmark data — tasks longer than this
+    # frequently have embedded action requirements that the regex misses. Raising
+    # this number = more false-readonly classifications = missed mutation calls = 0 score.
+    # Lowering it = more tasks use full FSM = higher latency but safer.
+    _READONLY_MAX_CHARS = 120
+    if has_readonly and not has_action and len(task_text) <= _READONLY_MAX_CHARS:
         return "readonly"
     return "full"
 

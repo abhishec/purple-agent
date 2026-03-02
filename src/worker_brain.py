@@ -66,7 +66,7 @@ from src.self_moa import numeric_moa_synthesize                                 
 from src.task_mode_classifier import (                                                         # deterministic read-only detection
     classify_task_mode, filter_tools_for_mode, build_mode_directive,
 )
-from src.sequence_enforcer import build_sequence_hint, record_sequence_outcome                 # tool-sequence hint injection
+from src.sequence_enforcer import build_sequence_hint, record_sequence_outcome, _resolve_tool_hints  # tool-sequence hint + L3b resolution
 
 
 def _split_tools_for_phases(tools: list) -> tuple[list, list]:
@@ -741,12 +741,28 @@ class MiniAIWorker:
                 return {"data": records, "total": len(records), "paginated": True}
             return await _direct_call(tool_name, params)
 
+        # UNIVERSAL STRUCTURAL APPROVAL GATE
+        # Tracks whether confirm_with_user has fired in this execution session.
+        # When seq_approval_required is True, mutation tools are BLOCKED until this
+        # flag is set. Soft prompts (directives in process_context) can be ignored by
+        # Claude; this hard gate cannot. Approach: "fail-open safe" — only enforced
+        # when (a) task requires approval AND (b) confirm_with_user tool is available.
+        _approval_granted = False
+        _has_confirm_tool = any(
+            t.get("name", "") == "confirm_with_user" for t in self._tools
+        )
+        _approval_required_gate = (
+            context.get("_seq_approval_required", False) and _has_confirm_tool
+        )
+
         async def _direct_call(tool_name: str, params: dict) -> dict:
+            nonlocal _approval_granted
             # confirm_with_user: call the real MCP endpoint for logging (policy scoring
             # checks that it was called). Then return an explicit "proceed" signal so the
             # model immediately continues to mutation tools without waiting for human input.
             # In benchmark mode, confirmation is always auto-granted.
             if tool_name == "confirm_with_user":
+                _approval_granted = True  # ← unlock the structural gate
                 try:
                     await call_tool(self._ep, tool_name, params, self.session_id)
                 except Exception:
@@ -756,6 +772,24 @@ class MiniAIWorker:
                     "confirmed": True,
                     "message": "CONFIRMED. Proceed immediately with all pending mutations now.",
                 }
+
+            # STRUCTURAL GATE: if this task requires approval, block ANY mutation
+            # tool call until confirm_with_user has been called.
+            # This converts a prompt-level hint into a hard enforcement contract.
+            # The error response instructs Claude exactly what to do next.
+            from src.hitl_guard import classify_tool as _classify_tool
+            if (_approval_required_gate
+                    and not _approval_granted
+                    and _classify_tool(tool_name) == "mutate"):
+                return {
+                    "status": "approval_required",
+                    "error": (
+                        f"POLICY_GATE: '{tool_name}' is a mutation tool. "
+                        "You MUST call confirm_with_user FIRST to obtain approval. "
+                        "Call confirm_with_user now, then retry this tool."
+                    ),
+                }
+
             # Registered tools (amortization + synthesized) run locally.
             # Zero MCP round-trip, exact Decimal precision.
             if is_registered_tool(tool_name):
@@ -878,29 +912,12 @@ class MiniAIWorker:
         # Detection: task_complexity == "full" (action task) + tools used + ZERO writes made.
         # Fix: targeted retry prompting Claude to call the specific mutation tools NOW.
         # This fires after anti-refusal retry but before compute verification.
-        _L2_ANALYSIS_MARKERS = [
-            "i would ", "should be ", "i recommend", "recommend that", "i suggest",
-            "you should", "you need to", "needs to be ", "could be ", "would approve",
-            "would reject", "would deny", "analysis shows", "findings indicate",
-            "based on the data", "based on my review", "i've reviewed", "having reviewed",
-            "appears to ", "seems to ", "i'll need", "we should", "this should",
-            "the next step", "you can now", "you may now",
-            # Additional markers for approval/eligibility analysis-without-execution:
-            "recommend approval", "recommend approving", "recommend that we approve",
-            "is eligible", "eligible for approval", "qualifies for", "sufficient balance",
-            "has sufficient", "meets the criteria", "criteria are met",
-            "balance allows", "would qualify", "can be approved", "should be approved",
-            "is approved", "approve the request", "approve this request",
-            "pto balance", "leave balance", "expense is within",
-        ]
         if (answer and not error
                 and tool_count > 0              # agent called SOME tools
                 and verifier.mutation_count == 0  # but made ZERO mutations
                 and task_complexity == "full"    # task requires action (not readonly)
                 and not self.budget.should_skip_llm
                 and not _is_bracket_format((answer or "").strip())):
-            answer_lower = answer.lower()
-            _has_analysis_lang = any(m in answer_lower for m in _L2_ANALYSIS_MARKERS)
             # L2 retry uses WRITE-TOOLS-ONLY — prevents Claude from re-reading
             # data instead of executing during the retry. confirm_with_user included
             # so policy confirmation can fire before the actual mutation.
@@ -988,8 +1005,13 @@ class MiniAIWorker:
         # Targets task_27-style failures: agent calls approve_expense but skips
         # log_audit_trail and update_budget_allocation because those aren't in the task text.
         # Only fires when mutation_count > 0 (L2 already handles mutation_count==0).
-        # Only checks exact-name tool hints (not prefix hints like "log_") to avoid
-        # false positives. Prefix hints expand via _resolve_tool_hints at directive time.
+        #
+        # DYNAMIC RESOLUTION: uses _resolve_tool_hints() (same function as directive
+        # building) so L3b checks RESOLVED tool names — identical to what the directive
+        # told Claude to call. Prefix hints like "log_" → "log_decision" (if that tool
+        # exists), making L3b work even when tool names differ from the seed's exact hints.
+        # This avoids hardcoding tool names: the seed describes INTENT (via prefix),
+        # resolution produces the actual tool for THIS task's tool set.
         _seq_hint_ctx = context.get("_seq_hint")
         if (_seq_hint_ctx and answer and not error and task_complexity == "full"
                 and verifier.mutation_count > 0
@@ -1001,18 +1023,29 @@ class MiniAIWorker:
                 _l3b_write_names = {t.get("name", "") for t in _l3b_write_tools}
                 _called_muts = {m["tool"] for m in verifier._mutations}
 
-                # Collect required non-approval write steps that have exact-name tool hints
+                # For each required non-approval step, resolve hints against available
+                # write tools (same as _build_directive does for the injected prompt).
+                # Then check if ANY resolved tool for that step was called.
+                # This is dynamic: "log_" resolves to whatever log_* tool THIS task has.
                 _seq_req_missed: list[str] = []
                 for step in _seq_steps:
                     if not step.get("required") or step.get("gate") == "approval":
                         continue
-                    for hint in step.get("tool_hints", []):
-                        # Skip prefix hints (e.g. "approve_", "log_") — too ambiguous
-                        if hint.endswith("_"):
-                            continue
-                        if hint in _l3b_write_names and hint not in _called_muts:
-                            _seq_req_missed.append(hint)
-                            break  # one representative miss per step is enough
+                    # Resolve hints to actual available tool names
+                    resolved = _resolve_tool_hints(
+                        step.get("tool_hints", []), _l3b_write_names
+                    )
+                    # Filter out prefix-ambiguous results (those still ending with "_")
+                    actual_tools = [t for t in resolved if not t.endswith("_")]
+                    if not actual_tools:
+                        continue
+                    # Step is covered if at least one resolved tool was called
+                    step_covered = any(t in _called_muts for t in actual_tools)
+                    if not step_covered:
+                        # Take first uncalled tool as the representative miss
+                        miss = next((t for t in actual_tools if t not in _called_muts), None)
+                        if miss:
+                            _seq_req_missed.append(miss)
 
                 if _seq_req_missed:
                     missed_str = ", ".join(_seq_req_missed[:5])
