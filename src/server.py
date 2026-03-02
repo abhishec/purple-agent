@@ -25,7 +25,10 @@ AGENT_CARD = {
     ),
     "version": "5.0.0",
     "url": os.getenv("PURPLE_AGENT_CARD_URL", "https://purple.agentbench.usebrainos.com"),
-    "capabilities": {"streaming": False, "tools": True},
+    # A2A SDK required fields
+    "defaultInputModes": ["text"],
+    "defaultOutputModes": ["text"],
+    "capabilities": {"streaming": False, "pushNotifications": False, "stateTransitionHistory": False},
     "skills": [{
         "id": "business-process",
         "name": "Business Process AI Worker",
@@ -34,6 +37,10 @@ AGENT_CARD = {
             "offboarding, invoice reconciliation, SLA breach, order management, "
             "compliance audit, dispute resolution, AR collections, month-end close."
         ),
+        # A2A SDK required field on each skill
+        "tags": ["business-process", "airline", "retail", "crm", "workflow", "automation"],
+        "inputModes": ["text"],
+        "outputModes": ["text"],
     }],
 }
 
