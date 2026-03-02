@@ -147,7 +147,7 @@ Be concise. Only flag clear errors, not stylistic issues."""
                 f"Your previous answer had calculation errors:\n"
                 f"{chr(10).join(f'- {i}' for i in issues)}\n\n"
                 f"Correction needed: {hint}\n\n"
-                f"Please recalculate and provide the corrected answer for:\n{task_text[:600]}"
+                f"Please recalculate and provide the corrected answer for:\n{task_text[:1000]}"
             )
 
         return ComputeVerifyResult(has_errors, confidence, issues, correction_prompt)

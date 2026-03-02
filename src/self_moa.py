@@ -359,7 +359,7 @@ async def numeric_moa_synthesize(
         return initial_answer
 
     user_content = (
-        f"TASK:\n{task_text[:600]}\n\n"
+        f"TASK:\n{task_text[:1000]}\n\n"
         f"AGENT ANSWER:\n{initial_answer[:1200]}"
     )
 

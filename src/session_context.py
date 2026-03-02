@@ -79,7 +79,7 @@ def get_context_prompt(session_id: str) -> str:
         parts.append("## Recent Conversation")
         for t in recent:
             label = "User" if t.role == "user" else "Agent"
-            parts.append(f"{label}: {t.content[:400]}")
+            parts.append(f"{label}: {t.content[:1000]}")
 
     return "\n".join(parts)
 
@@ -166,7 +166,7 @@ def _compress_inline(ctx: SessionContext) -> None:
     keep = ctx.turns[-KEEP_RECENT:]
     if not older:
         return
-    lines = [f"{'User' if t.role == 'user' else 'Agent'}: {t.content[:200]}" for t in older]
+    lines = [f"{'User' if t.role == 'user' else 'Agent'}: {t.content[:500]}" for t in older]
     block = "\n".join(lines)
     ctx.compressed_summary = (
         ctx.compressed_summary + "\n\n" + block if ctx.compressed_summary else block
