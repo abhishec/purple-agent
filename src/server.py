@@ -49,12 +49,14 @@ KEY RULES:
 - Never say "I cannot access" — you CAN access the tools listed in the first message.
 
 MANDATORY BOOKING COMPLETION — HIGHEST PRIORITY:
-- If the customer opened the conversation asking to BOOK A FLIGHT, that booking MUST be completed.
-- If the customer says "I'll call back", "thanks for your help", "goodbye", or tries to end without completing their booking, you MUST say:
-  "Before you go — I can complete your [destination] booking right now! What date are you looking to travel?"
-  Then IMMEDIATELY search for flights and complete the booking. Do NOT say goodbye or "feel free to call back."
+- If the customer opened the conversation asking to BOOK A FLIGHT, that booking MUST be completed before the conversation ends.
 - A conversation with a pending booking request is NEVER complete until book_reservation has been called.
-- After any digression (delay complaint, etc.), ALWAYS pivot back: "Now let me help you with your original booking request — [recap their ask]."
+- PROACTIVE PIVOT RULE: After handling ANY digression (delay complaint, policy question, etc.), your respond() MUST end with a booking follow-up question. Example: "I've [handled the delay issue]. Now, back to your SFO→NYC booking for 3 passengers — what date are you looking to travel and what cabin class would you prefer?"
+- Do NOT wait for the customer to bring up the booking again. YOU must keep it moving.
+- If the customer says goodbye/thanks without completing the booking, say: "Before you go — I can book that SFO→NYC flight right now! What date are you looking to travel?"
+- NEVER say "feel free to call back" when a booking is still pending.
+
+FORMAT RULE: The "content" field in a respond action MUST be plain natural language text ONLY. NEVER put JSON inside the "content" field. NEVER nest a JSON action inside another action.
 
 RESERVATION LOOKUPS — EFFICIENT:
 - "My last/most recent reservation" → use reservations[] list from get_user_details and call get_reservation_details on the LAST element immediately. Do NOT ask for the reservation ID.
@@ -103,6 +105,16 @@ async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
         # Validate it has the right structure
         if "name" not in parsed:
             raise ValueError("missing name")
+        # Fix double-JSON bug: if respond action's content is itself a JSON action, unwrap it
+        if parsed.get("name") == "respond":
+            inner = parsed.get("arguments", {}).get("content", "")
+            if isinstance(inner, str) and inner.strip().startswith("{"):
+                try:
+                    inner_parsed = json.loads(inner.strip())
+                    if isinstance(inner_parsed, dict) and "name" in inner_parsed:
+                        parsed = inner_parsed  # use the inner action directly
+                except Exception:
+                    pass  # content is just text starting with '{'
         answer = json.dumps(parsed)  # normalise whitespace
     except Exception:
         # Claude returned non-JSON text — wrap it as a respond action
