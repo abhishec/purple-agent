@@ -5,6 +5,10 @@ RUN useradd -m -u 1000 agentbeats
 
 WORKDIR /app
 
+# Install system utilities (curl needed for AgentBeats health check)
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Fix: ensure /app is owned by agentbeats so RL/knowledge files can be written
 # (case_log.json, knowledge_base.json, entity_memory.json, etc. all write here)
 RUN chown agentbeats:agentbeats /app
