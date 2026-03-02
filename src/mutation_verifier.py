@@ -60,20 +60,9 @@ _READ_PREFIXES = frozenset([
     "estimate_", "compare_", "diff_", "trace_", "watch_",
 ])
 
-# Approval-gate tools are HITL triggers, not DB mutations.
-# We delegate to hitl_guard so the logic lives in one place.
-from src.hitl_guard import is_approval_tool as _is_approval_tool
-
-# Suffixes that mark a tool as analysis/compute regardless of its verb prefix.
-# Handles cases like:
-#   run_integration_compatibility_test → ends with _test  → read/compute
-#   generate_conflict_report           → ends with _report → read/compute
-_READ_SUFFIXES = (
-    "_test", "_report", "_check", "_analysis", "_assessment",
-    "_review", "_audit", "_diagnostic", "_estimate", "_forecast",
-    "_projection", "_comparison", "_simulation", "_preview",
-    "_compatibility_test", "_compatibility_check",
-)
+# Approval-gate tools and read-suffix tools imported from hitl_guard
+# (the canonical classifier) — single source of truth for both classifiers.
+from src.hitl_guard import is_approval_tool as _is_approval_tool, READ_SUFFIXES as _READ_SUFFIXES
 
 
 def _is_write_tool(tool_name: str) -> bool:

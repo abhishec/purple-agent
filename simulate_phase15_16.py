@@ -122,9 +122,19 @@ check("hitl_guard: 'update_budget_allocation' is mutate",
       f"got={classify_tool('update_budget_allocation')}")
 check("hitl_guard: 'get_employee' is read",
       classify_tool("get_employee") == "read", f"got={classify_tool('get_employee')}")
-check("hitl_guard: 'confirm_with_user' — gate tool check",
-      classify_tool("confirm_with_user") in ("mutate", "read", "compute"),  # just exists
+check("hitl_guard: 'confirm_with_user' — classified as read (approval gate, not blocked)",
+      classify_tool("confirm_with_user") == "read",
       f"got={classify_tool('confirm_with_user')}")
+# Critical regression test: run_integration_compatibility_test and generate_conflict_report
+# must be 'read' in BOTH classifiers (classify_tool AND _is_write_tool) so the structural
+# gate never blocks them — previously these were classified as 'mutate' causing gate to
+# block Phase A calls → sequence=0 regression.
+check("hitl_guard: classify_tool('run_integration_compatibility_test') == 'read'",
+      classify_tool("run_integration_compatibility_test") == "read",
+      f"got={classify_tool('run_integration_compatibility_test')}")
+check("hitl_guard: classify_tool('generate_conflict_report') == 'read'",
+      classify_tool("generate_conflict_report") == "read",
+      f"got={classify_tool('generate_conflict_report')}")
 
 # 8. Gate is fail-open: if _has_confirm_tool is False, gate is disabled
 check("_execute: gate conditioned on _has_confirm_tool",

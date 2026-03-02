@@ -96,6 +96,18 @@ def find_approval_tool(tools: list[dict]) -> str | None:
     return None
 
 
+# Suffixes that mark a tool as analysis/compute regardless of its verb prefix.
+# Tools like run_integration_compatibility_test (ends _test) or
+# generate_conflict_report (ends _report) are read/compute, never mutations.
+# Defined here (the canonical classifier) and imported by mutation_verifier.
+READ_SUFFIXES = (
+    "_test", "_report", "_check", "_analysis", "_assessment",
+    "_review", "_audit", "_diagnostic", "_estimate", "_forecast",
+    "_projection", "_comparison", "_simulation", "_preview",
+    "_compatibility_test", "_compatibility_check",
+)
+
+
 def classify_tool(tool_name: str) -> str:
     """
     Returns 'read', 'compute', or 'mutate'.
@@ -103,25 +115,26 @@ def classify_tool(tool_name: str) -> str:
     compute = calculation only, no side effects
     mutate = changes state — BLOCKED at APPROVAL_GATE
 
-    Fix (CRITICAL): The original default was 'return "read"' for any tool
-    that matched no prefix. This meant novel mutation tools (e.g. escalate_ticket,
-    initiate_payment, finalize_order) were silently classified as READ and allowed
-    through the APPROVAL_GATE, causing unauthorized mutations.
+    Approval gate tools (confirm_with_user, require_customer_signoff, etc.)
+    are not mutations — they're HITL triggers. They are NOT blocked at the
+    approval gate (they ARE the gate).
 
-    Fix: Default is now 'mutate' for unrecognized tools. The reasoning:
-    - A read tool that gets misclassified as mutate = harmless (it just appears
-      in the blocked list, no actual mutation occurs since it's read-only)
-    - A mutate tool that gets misclassified as read = dangerous (unauthorized
-      state change happens without human approval)
-    - Erring toward mutation blocking is the correct security posture.
+    Tools ending with analysis/report/test suffixes (READ_SUFFIXES) are
+    compute/read regardless of verb prefix (e.g. generate_conflict_report,
+    run_integration_compatibility_test).
 
-    Compute tools (calculate_, compute_, estimate_) are still identified first
-    since they are truly side-effect-free and should never be blocked.
+    Default is 'mutate' for unrecognized tools — fail-safe toward blocking.
     """
     name = tool_name.lower()
+    # Approval gate tools are never blocked — they ARE the gate
+    if is_approval_tool(name):
+        return "read"
     # Check compute FIRST (higher priority than general read prefixes)
     if name.startswith("calculate_") or name.startswith("compute_") or name.startswith("estimate_"):
         return "compute"
+    # Tools ending with analysis/report suffixes are read/compute, not mutations
+    if any(name.endswith(s) for s in READ_SUFFIXES):
+        return "read"
     if any(name.startswith(p) for p in _READ_PREFIXES):
         return "read"
     if any(name.startswith(p) for p in _MUTATE_PREFIXES):
