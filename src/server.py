@@ -135,6 +135,11 @@ async def a2a_handler(request: Request):
             task_id=task_id,
             session_id=session_id,
         )
+        # Strip internal BrainOS metadata tags before sending to external evaluators.
+        # Tags like "[Process: General | Policy: N/A]" are for internal scoring pipelines
+        # and confuse A2A user simulators in tau2-bench conversational evaluations.
+        import re as _re
+        answer = _re.sub(r'\n*\[Process:[^\]]*\]\s*$', '', answer.rstrip(), flags=_re.IGNORECASE)
     except Exception as exc:
         # Return JSON-RPC error (not 500 HTML) so benchmark evaluator can parse it
         return JSONResponse({

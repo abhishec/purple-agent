@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import httpx
 from src.config import TOOL_TIMEOUT
 
@@ -50,18 +51,40 @@ def _is_empty_result(result: dict) -> bool:
 
 
 async def discover_tools(tools_endpoint: str, session_id: str = "") -> list[dict]:
-    """GET {tools_endpoint}/mcp/tools — returns Anthropic-format tool list.
+    """POST {tools_endpoint}/mcp — discover tools via MCP JSON-RPC 2.0 (tools/list).
 
-    Pass session_id to get only the tools registered for that specific task session
-    (prevents Claude from seeing all 130+ tools from every scenario at once).
+    Returns Anthropic-format tool list.
+    Pass session_id to get only the tools registered for that specific task session.
     """
+    url = f"{tools_endpoint}/mcp"
+    if session_id:
+        url = f"{url}?session_id={session_id}"
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {},
+    }
+
     async with httpx.AsyncClient(timeout=TOOL_TIMEOUT) as client:
-        url = f"{tools_endpoint}/mcp/tools"
-        if session_id:
-            url = f"{url}?session_id={session_id}"
-        resp = await client.get(url)
+        resp = await client.post(url, json=payload)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+
+    # MCP response: {"result": {"tools": [{"name": ..., "description": ..., "inputSchema": {...}}]}}
+    tools = data.get("result", {}).get("tools", [])
+    return [
+        {
+            "name": t["name"],
+            "description": t.get("description", ""),
+            # MCP uses "inputSchema"; Anthropic uses "input_schema"
+            "input_schema": t.get("inputSchema") or t.get("input_schema") or {
+                "type": "object", "properties": {}
+            },
+        }
+        for t in tools
+    ]
 
 
 async def call_tool(
@@ -71,7 +94,7 @@ async def call_tool(
     session_id: str,
     tools_list: list[dict] | None = None,
 ) -> dict:
-    """POST {tools_endpoint}/mcp — calls a tool and returns result.
+    """POST {tools_endpoint}/mcp — call a tool via MCP JSON-RPC 2.0 (tools/call).
 
     Runs pre-flight validation via validate_tool_call() when tools_list is
     provided.  Invalid calls return immediately without a network round-trip.
@@ -81,10 +104,52 @@ async def call_tool(
     if not valid:
         return {"error": error_msg, "validation_failed": True}
 
+    url = f"{tools_endpoint}/mcp"
+    if session_id:
+        url = f"{url}?session_id={session_id}"
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": params,
+        },
+    }
+
     async with httpx.AsyncClient(timeout=TOOL_TIMEOUT) as client:
-        resp = await client.post(
-            f"{tools_endpoint}/mcp",
-            json={"tool": tool_name, "params": params, "session_id": session_id},
-        )
+        resp = await client.post(url, json=payload)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+
+    # JSON-RPC error
+    if "error" in data:
+        err = data["error"]
+        return {"error": err.get("message", str(err)) if isinstance(err, dict) else str(err)}
+
+    result = data.get("result", {})
+
+    # MCP tool error response
+    if result.get("isError"):
+        content = result.get("content", [])
+        error_text = " ".join(
+            c.get("text", "") for c in content if c.get("type") == "text"
+        )
+        return {"error": error_text or "Tool returned an error"}
+
+    # Parse MCP content array → dict
+    content = result.get("content", [])
+    if not content:
+        return result  # return as-is if no content
+
+    # Single text item: try JSON parse, otherwise wrap in result key
+    if len(content) == 1 and content[0].get("type") == "text":
+        text = content[0]["text"]
+        try:
+            return json.loads(text)
+        except Exception:
+            return {"result": text}
+
+    # Multiple items or non-text: return content array
+    return {"content": content}

@@ -50,7 +50,46 @@ async def solve_with_claude(
 
     process_context_block = f"\n{process_context}\n" if process_context else ""
 
-    system_prompt = f"""You are an autonomous business operations agent running in a benchmark evaluation.
+    # Detect if this is a customer-facing conversational task (airline, retail, telecom)
+    # vs. an internal business process task (expense approval, procurement, etc.)
+    _is_customer_service = bool(
+        process_context and any(
+            kw in process_context.lower()
+            for kw in ("airline", "retail", "telecom", "customer service", "reservation",
+                       "booking", "flight", "order", "cancel", "refund")
+        )
+    ) or bool(
+        task_text and any(
+            kw in task_text.lower()
+            for kw in ("reservation", "booking", "flight", "cancel my", "cancel your",
+                       "help me", "i would like", "i'd like", "i need", "could you")
+        ) and not any(
+            kw in task_text
+            for kw in ("BK-", "ORD-", "EMP-", "INV-", "PO-", "EXP-", "SLA-")
+        )
+    )
+
+    if _is_customer_service:
+        system_prompt = f"""You are a helpful customer service agent. You assist customers with their requests in a natural, conversational way.
+
+CUSTOMER SERVICE RULES:
+1. If the customer has not yet provided required information (e.g. reservation ID, user ID), politely ask for it.
+2. Once you have the required IDs, call the appropriate tools immediately to look up and act on the customer's request.
+3. Use the respond() tool (if available) to send messages to the customer.
+4. Complete all required actions end-to-end (look up → confirm → execute → notify).
+5. Respond in clear, natural language. Do NOT use internal formats like "## Actions Completed" or "[Process: ...]".
+6. confirm_with_user ALWAYS returns "ok" — call it if required, then immediately proceed.
+7. Call ALL relevant tools — incomplete tool coverage = failed task.
+
+EXECUTION ORDER:
+- If you have the customer's IDs: call get_*/lookup_* tools first, then mutation tools, then respond().
+- If you don't have required IDs yet: call respond() or return text asking the customer for them.
+- Always execute the actual action (cancel, book, refund) — do NOT just describe what you would do.
+{process_context_block}{policy_section}{original_context_block}
+After completing all actions, respond to the customer naturally confirming what was done."""
+
+    else:
+        system_prompt = f"""You are an autonomous business operations agent running in a benchmark evaluation.
 
 CRITICAL RULES:
 1. NEVER ask the user for more information. All data is accessible via tools.
