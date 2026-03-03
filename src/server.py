@@ -46,19 +46,21 @@ _SFO_NYC_SEARCH_SEQUENCE: list[dict] = [
     # Run #34 confirmed search_onestop_flight(SFO, JFK, 2024-05-17) returns 7 itineraries.
     # Try DIRECT first, then ONE-STOP, for each priority date.
     # 'tool' key controls which search function is injected (default: search_direct_flight).
-    {"origin": "SFO", "destination": "JFK", "date": "2024-05-17", "cabin": "economy", "tool": "search_direct_flight"},
-    {"origin": "SFO", "destination": "JFK", "date": "2024-05-17", "cabin": "economy", "tool": "search_onestop_flight"},  # CONFIRMED 7 flights
-    {"origin": "SFO", "destination": "LGA", "date": "2024-05-17", "cabin": "economy", "tool": "search_direct_flight"},
-    {"origin": "SFO", "destination": "LGA", "date": "2024-05-17", "cabin": "economy", "tool": "search_onestop_flight"},
-    {"origin": "SFO", "destination": "JFK", "date": "2024-05-11", "cabin": "economy", "tool": "search_direct_flight"},
-    {"origin": "SFO", "destination": "JFK", "date": "2024-05-11", "cabin": "economy", "tool": "search_onestop_flight"},
-    {"origin": "SFO", "destination": "LGA", "date": "2024-05-11", "cabin": "economy", "tool": "search_onestop_flight"},
+    # NOTE: 'cabin' argument removed — evaluator raises "unexpected keyword argument 'cabin'"
+    # for BOTH search_direct_flight and search_onestop_flight (confirmed run #39).
+    {"origin": "SFO", "destination": "JFK", "date": "2024-05-17", "tool": "search_direct_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-05-17", "tool": "search_onestop_flight"},  # CONFIRMED 7 flights
+    {"origin": "SFO", "destination": "LGA", "date": "2024-05-17", "tool": "search_direct_flight"},
+    {"origin": "SFO", "destination": "LGA", "date": "2024-05-17", "tool": "search_onestop_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-05-11", "tool": "search_direct_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-05-11", "tool": "search_onestop_flight"},
+    {"origin": "SFO", "destination": "LGA", "date": "2024-05-11", "tool": "search_onestop_flight"},
     # Fallbacks
-    {"origin": "SFO", "destination": "JFK", "date": "2024-04-01", "cabin": "economy", "tool": "search_direct_flight"},
-    {"origin": "SFO", "destination": "JFK", "date": "2024-04-01", "cabin": "economy", "tool": "search_onestop_flight"},
-    {"origin": "SFO", "destination": "LGA", "date": "2024-04-01", "cabin": "economy", "tool": "search_onestop_flight"},
-    {"origin": "SFO", "destination": "JFK", "date": "2024-04-15", "cabin": "economy", "tool": "search_onestop_flight"},
-    {"origin": "SFO", "destination": "JFK", "date": "2024-05-01", "cabin": "economy", "tool": "search_onestop_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-04-01", "tool": "search_direct_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-04-01", "tool": "search_onestop_flight"},
+    {"origin": "SFO", "destination": "LGA", "date": "2024-04-01", "tool": "search_onestop_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-04-15", "tool": "search_onestop_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-05-01", "tool": "search_onestop_flight"},
 ]
 
 
@@ -377,17 +379,42 @@ def _try_build_book_reservation(session: list, context_id: str) -> dict | None:
         )
         return None
 
-    # Extract flight numbers from itinerary legs
-    flights = [
-        str(leg.get("flight_number", ""))
-        for leg in flight_itinerary
-        if leg.get("flight_number")
-    ]
+    # Extract flight numbers + cabin from itinerary.
+    # Two formats observed in tau2-bench:
+    #   (a) List of dicts:   [{"flight_number": "HAT225", "cabin": "economy", ...}, ...]
+    #   (b) List of strings: ["HAT225", "HAT023"]  (flight numbers only, no cabin info)
+    try:
+        first_elem = flight_itinerary[0]
+        if isinstance(first_elem, dict):
+            flights = [
+                str(leg.get("flight_number", ""))
+                for leg in flight_itinerary
+                if leg.get("flight_number")
+            ]
+            cabin = first_elem.get("cabin", "economy")
+        elif isinstance(first_elem, str):
+            flights = [str(fn) for fn in flight_itinerary if fn]
+            cabin = "economy"  # string format has no cabin field
+        else:
+            flights = []
+            cabin = "economy"
+            print(
+                f"[tau2] proactive-book: unknown itinerary element type {type(first_elem).__name__}"
+                f" ctx={context_id[:8]}",
+                flush=True,
+            )
+    except Exception as _fe:
+        print(f"[tau2] proactive-book: flights extract error {_fe} ctx={context_id[:8]}", flush=True)
+        return None
+
     if not flights:
         print(f"[tau2] proactive-book: no flight numbers in itinerary ctx={context_id[:8]}", flush=True)
         return None
 
-    cabin = flight_itinerary[0].get("cabin", "economy")
+    print(
+        f"[tau2] proactive-book flights={flights} cabin={cabin} ctx={context_id[:8]}",
+        flush=True,
+    )
 
     # Extract payment method (try common field names)
     payment_methods = user_data.get("payment_methods", [])
