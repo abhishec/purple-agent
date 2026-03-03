@@ -512,6 +512,7 @@ def _try_build_book_reservation(session: list, context_id: str) -> dict | None:
             "payment_methods": payment_method_id,
             "total_baggages": 0,
             "nonfree_baggages": 0,
+            "insurance": "no",
         },
     }
     print(
