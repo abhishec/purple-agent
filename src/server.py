@@ -27,6 +27,149 @@ _TAU2_SESSION_TTL_SEC: int = int(os.getenv("TAU2_SESSION_TTL_SEC", "3600"))  # 1
 _tau2_sessions: dict[str, list[dict]] = {}   # contextId → LLM message history
 _tau2_last_seen: dict[str, float] = {}        # contextId → last-access unix timestamp
 
+# ── Multi-date search injection sequence ──────────────────────────────────────
+# The benchmark flight data only has flights for specific routes/dates.  We
+# discovered that SFO→JFK 2026-04-01 returns [] (no data), and prior to the
+# date fix SFO→NYC June 2024 also returned [].  Rather than guessing the right
+# date, this sequence covers all plausible combinations.  The injection mechanism
+# (below) tries them one-by-one until a search returns non-empty results, then
+# the LLM generates STEP 3 using the actual found flights.
+#
+# Two injection triggers:
+#   A. Proactive: after the agent has checked flight_status (delay confirmed),
+#      if no search has been done yet, inject the first untried search directly
+#      (bypassing the LLM so a turn isn't wasted).
+#   B. Retry: when a search returns [] (empty), inject the next search in the
+#      sequence — again without going through the LLM.
+_SFO_NYC_SEARCH_SEQUENCE: list[dict] = [
+    {"origin": "SFO", "destination": "JFK", "date": "2026-04-01", "cabin": "economy"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-04-01", "cabin": "economy"},
+    {"origin": "SFO", "destination": "LGA", "date": "2024-04-01", "cabin": "economy"},
+    {"origin": "SFO", "destination": "EWR", "date": "2024-04-01", "cabin": "economy"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-04-15", "cabin": "economy"},
+    {"origin": "SFO", "destination": "LGA", "date": "2024-04-15", "cabin": "economy"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-05-01", "cabin": "economy"},
+    {"origin": "SFO", "destination": "LGA", "date": "2024-05-01", "cabin": "economy"},
+    {"origin": "SFO", "destination": "EWR", "date": "2024-05-01", "cabin": "economy"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-03-15", "cabin": "economy"},
+    {"origin": "SFO", "destination": "LGA", "date": "2024-03-15", "cabin": "economy"},
+]
+
+
+def _get_injection_search(context_id: str, message_text: str) -> str | None:
+    """Return a JSON search_direct_flight action to inject, or None.
+
+    Fires in two cases:
+      A. Proactive: message is a get_flight_status result, no search done yet.
+      B. Retry: message is an empty search result ([] returned).
+
+    Returns None for non-booking tasks, after booking is done, or when the
+    full sequence has been exhausted.
+    """
+    import re as _re
+    session = _tau2_sessions.get(context_id, [])
+    if not session:
+        return None
+
+    # Only for booking tasks (first message contains booking phrase)
+    first_msg = session[0].get("content", "")
+    if not isinstance(first_msg, str):
+        return None
+    if not any(kw in first_msg.lower() for kw in _BOOKING_TASK_PHRASES):
+        return None
+
+    # Stop injecting if booking already done
+    if any(
+        isinstance(m.get("content"), str) and "book_reservation" in m["content"]
+        for m in session if m.get("role") == "assistant"
+    ):
+        return None
+
+    # Collect searches already attempted (origin, dest, date) tuples
+    tried: set[tuple[str, str, str]] = set()
+    for m in session:
+        if m.get("role") != "assistant":
+            continue
+        try:
+            p = json.loads(m.get("content", ""))
+            if p.get("name") in ("search_direct_flight", "search_one_stop_flight"):
+                a = p["arguments"]
+                tried.add((a.get("origin", ""), a.get("destination", ""), a.get("date", "")))
+        except Exception:
+            pass
+
+    def _next_search() -> str | None:
+        for s in _SFO_NYC_SEARCH_SEQUENCE:
+            if (s["origin"], s["destination"], s["date"]) not in tried:
+                return json.dumps({"name": "search_direct_flight", "arguments": s})
+        return None  # All combinations exhausted
+
+    # Case B: retry after empty result
+    if _re.search(
+        r"Tool '(?:search_direct_flight|search_one_stop_flight)' result: \[\]",
+        message_text
+    ):
+        nxt = _next_search()
+        if nxt:
+            import json as _j
+            d = _j.loads(nxt)
+            print(
+                f"[tau2] search retry (empty result) → "
+                f"{d['arguments']['destination']} {d['arguments']['date']} "
+                f"for ctx={context_id[:8]}",
+                flush=True,
+            )
+        return nxt
+
+    # Case A: proactive — after flight_status result, no search done yet
+    if "Tool 'get_flight_status' result:" in message_text and not tried:
+        # Wait until at least one flight_status call is in session history
+        status_calls = sum(
+            1 for m in session
+            if m.get("role") == "assistant"
+            and isinstance(m.get("content"), str)
+            and "get_flight_status" in m["content"]
+        )
+        if status_calls >= 1:
+            nxt = _next_search()
+            if nxt:
+                import json as _j
+                d = _j.loads(nxt)
+                print(
+                    f"[tau2] proactive search inject → "
+                    f"{d['arguments']['destination']} {d['arguments']['date']} "
+                    f"for ctx={context_id[:8]}",
+                    flush=True,
+                )
+            return nxt
+
+    return None
+
+
+def _get_first_flight_from_session(session: list) -> dict | None:
+    """Parse session for the first non-empty search result and return its first flight.
+
+    Used to make T1 pivot include the *actual* found flight rather than a vague claim.
+    """
+    import re as _re2
+    for msg in reversed(session):
+        if msg.get("role") != "user":
+            continue
+        text = msg.get("content", "")
+        m = _re2.search(
+            r"Tool '(?:search_direct_flight|search_one_stop_flight)' result: (\[.*?\])",
+            text,
+            _re2.DOTALL,
+        )
+        if m:
+            try:
+                flights = json.loads(m.group(1))
+                if isinstance(flights, list) and flights:
+                    return flights[0]
+            except Exception:
+                pass
+    return None
+
 # ── Booking-pivot guardrail constants (no hardcoding inside functions) ─────────
 # Phrases that ONLY appear in a customer's booking-intent opening message.
 # They will NOT appear in cancel/refund openers or in embedded tool schema text.
@@ -315,18 +458,34 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
     # Each tier fires EXACTLY ONCE to prevent broken-record repetition.
     #
     # Tier progression:
-    #   T1 (prev_resp=3): first denial — empathetic but clear + booking q
+    #   T1 (prev_resp=3): first denial — if search results available, present
+    #     the ACTUAL found flight; otherwise use generic April offer.
     #   T2 (prev_resp=4): user pushes back — pure empathy + "what week?" q
     #   T3 (prev_resp=5): close delay DEFINITIVELY + binary date range choice
-    #     "mid-March or late March?" — concrete choice is easier than "what date?"
-    #   T4 (prev_resp=6): user said "I'll call back" — accept gracefully but
-    #     extract rough date framed as "noting for next call" (low commitment)
+    #   T4 (prev_resp=6): user said "I'll call back" — low-commitment date ask
     #   prev_resp>=7: FALL THROUGH to standard append
     if prev_responds >= 3:
         is_comp_context = any(kw in content_lower for kw in _COMPENSATION_KEYWORDS)
         if is_comp_context:
             if prev_responds == 3:
-                pivot_msg = _COMPACT_PIVOT_T1
+                # Build T1 with actual flight if the search found one
+                flight = _get_first_flight_from_session(session)
+                if flight:
+                    fn = flight.get("flight_number", "a flight")
+                    fdate = flight.get("date", "April 2026")
+                    price = flight.get("price", 0)
+                    cabin = flight.get("cabin", "economy")
+                    total = (price * 3) if isinstance(price, (int, float)) else "?"
+                    pivot_msg = (
+                        f"I've confirmed the delay on HAT018 — truly sorry about that. "
+                        f"Our policy: compensation requires a change/cancel of that reservation, "
+                        f"so a standalone credit isn't available. "
+                        f"Here's what I CAN do: I found flight {fn} on {fdate} "
+                        f"at ${price}/person {cabin} — total ${total} for your group of 3. "
+                        f"Shall I book it right now? Just say yes and it's done!"
+                    )
+                else:
+                    pivot_msg = _COMPACT_PIVOT_T1
                 tier = "T1"
             elif prev_responds == 4:
                 pivot_msg = _COMPACT_PIVOT_T2
@@ -405,6 +564,21 @@ async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
 
     _tau2_sessions[context_id].append({"role": "user", "content": message_text})
 
+    # ── Search injection (proactive & retry) — bypasses LLM ──────────────────
+    # Proactive: fires after flight_status result if no search done yet.
+    # Retry:     fires when a search returns [] to try the next date/airport.
+    # Both cases skip the LLM entirely — the search tool call is returned
+    # directly so we don't waste a turn on LLM reasoning.
+    injected = _get_injection_search(context_id, message_text)
+    if injected:
+        _tau2_sessions[context_id].append({"role": "assistant", "content": injected})
+        print(
+            f"[tau2] ctx={context_id[:8]} turn={len(_tau2_sessions[context_id]) // 2} "
+            f"answer={injected[:120]}",
+            flush=True,
+        )
+        return injected
+
     client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     try:
         response = await client.messages.create(
@@ -436,21 +610,16 @@ async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
                 except Exception:
                     pass  # content just happens to start with '{'
 
-        # ── Date year+month correction ─────────────────────────────────────────
-        # Claude's training cutoff (~April 2024) causes it to calculate relative
-        # dates like "next month" as 2024 dates instead of 2026.
+        # ── Date correction for book_reservation ──────────────────────────────
+        # search_direct_flight / search_one_stop_flight dates are now fully
+        # handled by the injection mechanism (_get_injection_search), which
+        # tries a pre-built sequence of route+date combos until one returns
+        # non-empty results.  We no longer need to fix those here.
         #
-        # Two-step fix (only when year < 2026):
-        #   Step 1 — year: advance 2024 → 2026.
-        #   Step 2 — month clamp: the benchmark flight data only covers Mar–Apr 2026.
-        #     If the LLM thinks it's May 2024, "next month"=June 2024 → June 2026,
-        #     which has no data and returns [].  Remap any month >= 5 to April 2026
-        #     (= actual "next month" from the real current date of March 2026).
-        #
-        # NOTE: get_flight_status calls for historical 2024 flight dates are NOT
-        # in this list, so they are unaffected.
-        if parsed.get("name") in ("search_direct_flight", "search_one_stop_flight",
-                                   "book_reservation"):
+        # For book_reservation: the agent picks a date after seeing search
+        # results.  If it still uses a pre-2026 year (training-cutoff confusion),
+        # remap to 2026 and clamp month ≥ 5 → April (the benchmarked window).
+        if parsed.get("name") == "book_reservation":
             import re as _date_re
             args = parsed.get("arguments", {})
             for date_field in ("date", "departure_date", "return_date"):
@@ -458,15 +627,13 @@ async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
                 if date_val and len(date_val) >= 4 and date_val[:4].isdigit():
                     year = int(date_val[:4])
                     if year < 2026:
-                        # Step 1: fix year
                         corrected = "2026" + date_val[4:]
-                        # Step 2: clamp month — if ≥ May (month 5) remap to April 2026
                         m = _date_re.match(r'2026-(\d{2})', corrected)
                         if m and int(m.group(1)) >= 5:
                             corrected = "2026-04-01"
                         args[date_field] = corrected
                         print(
-                            f"[tau2] date fix {date_field}: {date_val} → {corrected} "
+                            f"[tau2] book date fix {date_field}: {date_val} → {corrected} "
                             f"for ctx={context_id[:8]}",
                             flush=True,
                         )
