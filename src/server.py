@@ -287,12 +287,20 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
             )
             return
 
-    # ── Backstop: at 6+ responds, if agent STILL hasn't asked for travel date ──
-    # This catches edge cases where the agent is stuck without mentioning dates.
-    if prev_responds >= 6 and not has_date_q:
+    # ── Backstop: at 5+ responds, if agent response doesn't ask for travel date ──
+    # This fires when user asks a distraction question at turn 5+ (e.g., "how many
+    # passengers were on the delayed reservation?"). The agent would answer the
+    # factual question without a date question → user uses the answered question as
+    # an exit point ("Thanks! I'll call back later.").
+    # T3 replaces the factual answer with the "booking now = fastest path to comp
+    # resolution" message, keeping booking momentum even if the user's question
+    # isn't directly answered.
+    # Note: at this late stage (5+ turns), completing the booking trumps answering
+    # distraction questions.
+    if prev_responds >= 5 and not has_date_q:
         parsed["arguments"]["content"] = _COMPACT_PIVOT_T3
         print(
-            f"[tau2] compact pivot backstop (no date q, turn {prev_responds}) for ctx={context_id[:8]}",
+            f"[tau2] compact pivot backstop T3 (no date q, turn {prev_responds}) for ctx={context_id[:8]}",
             flush=True,
         )
         return
