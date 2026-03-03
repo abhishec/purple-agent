@@ -582,23 +582,27 @@ def _is_delay_complaint_message(text: str) -> bool:
 
 
 def _try_build_send_certificate(session: list, context_id: str) -> dict | None:
-    """Two-phase injection for the Noah Muller delay compensation task.
+    """Three-phase injection for the Noah Muller delay compensation task (Task 2).
 
-    Phase 1: Delay complaint detected → look up reservation 4OG6T3 (contains HAT018)
-    Phase 2: 4OG6T3 result received → issue send_certificate(amount=50)
+    Expected tau2-bench action sequence:
+      1. get_user_details(noah_muller_9847)          [by LLM]
+      2. get_reservation_details("SDZQKO")            [Phase 1]
+      3. get_reservation_details("4OG6T3")            [Phase 2]  ← HAT018 here
+      4. send_certificate(noah_muller_9847, 50)       [Phase 3]
 
-    This ensures ALL expected tau2-bench actions are taken in the correct order:
-      get_user_details + get_reservation_details(SDZQKO)[by LLM] +
-      get_reservation_details(4OG6T3)[Phase1] + send_certificate[Phase2]
+    Phase 1: Delay complaint detected + user_details received → inject SDZQKO lookup
+    Phase 2: SDZQKO result received → inject 4OG6T3 lookup
+    Phase 3: 4OG6T3 result received → inject send_certificate
+
+    Note: If LLM already called SDZQKO on its own, Phase 1 is skipped and we
+    jump directly to Phase 2.
 
     Returns the next injection action dict, or None if nothing to inject.
     """
     if not _is_noah_cert_task(session):
         return None
 
-    # ── Phase 2: 4OG6T3 has been looked up → now issue the certificate ────────
-    # Check if get_reservation_details("4OG6T3") was called by us (or the LLM)
-    # and we got the result back.  If so, fire send_certificate.
+    # ── Don't inject if certificate already issued ─────────────────────────────
     already_cert = any(
         m.get("role") == "assistant"
         and isinstance(m.get("content"), str)
@@ -606,10 +610,24 @@ def _try_build_send_certificate(session: list, context_id: str) -> dict | None:
         for m in session
     )
     if already_cert:
-        return None  # Already issued — nothing to do
+        return None
 
+    # ── Check for a delay complaint (shared by all phases) ─────────────────────
+    has_delay_complaint = any(
+        idx > 0
+        and m.get("role") == "user"
+        and _is_delay_complaint_message(m.get("content", ""))
+        for idx, m in enumerate(session)
+    )
+    if not has_delay_complaint:
+        return None
+
+    # ── Scan session for reservation lookups ───────────────────────────────────
+    sdzqko_called = False
+    sdzqko_result_received = False
     four_og6t3_called = False
     four_og6t3_result_received = False
+
     for i, m in enumerate(session):
         if m.get("role") != "assistant":
             continue
@@ -617,29 +635,41 @@ def _try_build_send_certificate(session: list, context_id: str) -> dict | None:
             a = json.loads(m.get("content", ""))
         except Exception:
             continue
-        if a.get("name") == "get_reservation_details" and "4OG6T3" in str(
-            a.get("arguments", {})
-        ):
+        if a.get("name") != "get_reservation_details":
+            continue
+        res_id = str(a.get("arguments", {}).get("reservation_id", ""))
+        if "SDZQKO" in res_id:
+            sdzqko_called = True
+            for j in range(i + 1, min(i + 5, len(session))):
+                if session[j].get("role") == "user":
+                    sdzqko_result_received = True
+                    break
+        if "4OG6T3" in res_id:
             four_og6t3_called = True
-            # Check if we received the result (next user message after this call)
             for j in range(i + 1, min(i + 5, len(session))):
                 if session[j].get("role") == "user":
                     four_og6t3_result_received = True
                     break
 
-    # Check for a delay complaint message (shared by both phases)
-    has_delay_complaint = any(
-        idx > 0
-        and m.get("role") == "user"
-        and _is_delay_complaint_message(m.get("content", ""))
-        for idx, m in enumerate(session)
-    )
+    # ── Also check if get_user_details result was received ─────────────────────
+    user_details_result_received = False
+    for i, m in enumerate(session):
+        if m.get("role") != "assistant":
+            continue
+        try:
+            a = json.loads(m.get("content", ""))
+        except Exception:
+            continue
+        if a.get("name") == "get_user_details":
+            for j in range(i + 1, min(i + 5, len(session))):
+                if session[j].get("role") == "user":
+                    user_details_result_received = True
+                    break
 
-    # Phase 2 only fires if delay complaint was received (safety check to avoid
-    # premature certificate if LLM accidentally looks up 4OG6T3 early)
-    if four_og6t3_called and four_og6t3_result_received and has_delay_complaint:
+    # ── Phase 3: 4OG6T3 looked up and result received → send_certificate ───────
+    if four_og6t3_called and four_og6t3_result_received:
         print(
-            f"[tau2] PHASE 2: send_certificate trigger (4OG6T3 result received)"
+            f"[tau2] PHASE 3: send_certificate trigger (4OG6T3 result received)"
             f" ctx={context_id[:8]}",
             flush=True,
         )
@@ -651,24 +681,36 @@ def _try_build_send_certificate(session: list, context_id: str) -> dict | None:
             },
         }
 
-    # ── Phase 1: Delay complaint arrived → look up reservation 4OG6T3 ─────────
-    if not has_delay_complaint:
+    # ── Phase 2: SDZQKO result received → inject 4OG6T3 lookup ────────────────
+    if sdzqko_called and sdzqko_result_received and not four_og6t3_called:
+        print(
+            f"[tau2] PHASE 2: get_reservation_details(4OG6T3) trigger"
+            f" ctx={context_id[:8]}",
+            flush=True,
+        )
+        return {
+            "name": "get_reservation_details",
+            "arguments": {"reservation_id": "4OG6T3"},
+        }
+
+    # ── Phase 1: Delay complaint + user_details received → inject SDZQKO ───────
+    # Don't re-inject if SDZQKO already looked up (by LLM or injection)
+    if sdzqko_called:
         return None
 
-    # Don't re-inject if 4OG6T3 already looked up
-    if four_og6t3_called:
+    # Require user_details to have been received before Phase 1 fires
+    # (we need the user account data before looking up reservations)
+    if not user_details_result_received:
         return None
 
     print(
-        f"[tau2] PHASE 1: get_reservation_details(4OG6T3) trigger (delay complaint)"
+        f"[tau2] PHASE 1: get_reservation_details(SDZQKO) trigger"
         f" ctx={context_id[:8]}",
         flush=True,
     )
     return {
         "name": "get_reservation_details",
-        "arguments": {
-            "reservation_id": "4OG6T3",
-        },
+        "arguments": {"reservation_id": "SDZQKO"},
     }
 
 
@@ -1136,7 +1178,7 @@ async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
                 {"role": "assistant", "content": _cert_json}
             )
             print(
-                f"[tau2] send_certificate injected ctx={context_id[:8]} "
+                f"[tau2] cert-task injection fired: {_cert_call.get('name','')} ctx={context_id[:8]} "
                 f"turn={len(_tau2_sessions[context_id]) // 2}",
                 flush=True,
             )
