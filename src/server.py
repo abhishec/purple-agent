@@ -68,12 +68,22 @@ _COMPACT_BOOKING_PIVOT: str = (
     "But I want to make this right: let me book your flight for you right now — "
     "what date would you like to travel and what cabin class do you prefer?"
 )
-# Keywords indicating the agent is still discussing compensation (not booking).
+# Keywords indicating the agent is ACTIVELY explaining compensation policy.
+# IMPORTANT: Only include terms that appear in policy-denial sentences.
+# Generic empathy words like "frustration"/"inconvenience" must NOT be here —
+# they appear in turn-2 acknowledgments (before comp policy is even raised)
+# and would cause the pivot to fire too early, confusing the user simulator.
 _COMPENSATION_KEYWORDS: tuple[str, ...] = (
-    "compensation", "per our policy", "only available when", "change or cancel",
-    "not eligible", "unable to offer", "cannot offer", "cannot provide",
-    "only when the reservation", "requires a change", "requires changing",
-    "frustration", "inconvenience",  # agent still in apology mode
+    "compensation",        # agent is specifically discussing compensation
+    "per our policy",      # policy explanation phrase
+    "only available when", # policy explanation phrase
+    "change or cancel",    # specific policy trigger condition
+    "not eligible",        # denial language
+    "unable to offer",     # denial language
+    "cannot offer",        # denial language
+    "only when the reservation",  # specific policy phrase
+    "requires a change",   # specific policy trigger
+    "requires changing",   # specific policy trigger
 )
 
 TAU2_SYSTEM_PROMPT = """You are an expert airline customer service agent working inside the tau2-bench evaluation framework.
@@ -218,22 +228,35 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
         flush=True,
     )
 
-    # After the 2nd respond (turns 7+), if the agent is still discussing
-    # compensation/delay, the user simulator tends to either push back endlessly
-    # (verbose) or give up immediately (too curt). Replace with the compact
-    # empathetic pivot that resolves the compensation issue in 4 sentences and
-    # ends with a direct, warm booking question.
-    if prev_responds >= 2:
+    # ── Compact pivot: fires when agent is ACTIVELY explaining compensation policy ──
+    # Threshold >= 3: give the agent at least 3 natural turns before overriding.
+    # Turn 1 (prev_resp=1): agent asks for ID + appends date q
+    # Turn 2 (prev_resp=2): agent looks up reservation, explains comp policy + date q
+    # Turn 3 (prev_resp=3): user pushes back → NOW override if comp keywords present
+    # This prevents premature firing at turn 2 when agent says "I understand your
+    # inconvenience" (before compensation policy has even been raised).
+    if prev_responds >= 3:
         is_comp_context = any(kw in content_lower for kw in _COMPENSATION_KEYWORDS)
-        if is_comp_context or not has_date_q:
+        if is_comp_context:
             parsed["arguments"]["content"] = _COMPACT_BOOKING_PIVOT
             print(
-                f"[tau2] compact pivot override (turn {prev_responds}) for ctx={context_id[:8]}",
+                f"[tau2] compact pivot override (comp, turn {prev_responds}) for ctx={context_id[:8]}",
                 flush=True,
             )
             return
 
-    # First-respond range (prev_responds == 1): append pivot only if missing.
+    # ── Backstop: at 5+ responds, if agent STILL hasn't asked for travel date ──
+    # This catches edge cases where the agent is stuck in a loop without ever
+    # mentioning dates (e.g., stuck on flight status or other tangents).
+    if prev_responds >= 5 and not has_date_q:
+        parsed["arguments"]["content"] = _COMPACT_BOOKING_PIVOT
+        print(
+            f"[tau2] compact pivot backstop (no date q, turn {prev_responds}) for ctx={context_id[:8]}",
+            flush=True,
+        )
+        return
+
+    # ── Standard append: inject date question if the agent forgot it ──────────
     if not has_date_q:
         parsed["arguments"]["content"] = content.rstrip() + _BOOKING_PIVOT
         print(f"[tau2] booking pivot injected for ctx={context_id[:8]}", flush=True)
