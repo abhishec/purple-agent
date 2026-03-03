@@ -416,26 +416,41 @@ def _try_build_book_reservation(session: list, context_id: str) -> dict | None:
         flush=True,
     )
 
-    # Extract payment method (try common field names)
+    # Extract payment method — handle both dict and string formats
+    # Dict format: [{"payment_method_id": "pm_xxx", "type": "credit_card", ...}]
+    # String format: ["pm_xxx"]  (the string IS the payment method ID)
     payment_methods = user_data.get("payment_methods", [])
+    print(
+        f"[tau2] proactive-book payment_methods type={type(payment_methods).__name__}"
+        f" len={len(payment_methods)} sample={str(payment_methods)[:80]} ctx={context_id[:8]}",
+        flush=True,
+    )
     payment_method_id = ""
     for pm in payment_methods:
-        payment_method_id = (
-            pm.get("payment_method_id")
-            or pm.get("id")
-            or pm.get("payment_id")
-            or ""
-        )
+        if isinstance(pm, dict):
+            payment_method_id = (
+                pm.get("payment_method_id")
+                or pm.get("id")
+                or pm.get("payment_id")
+                or ""
+            )
+        elif isinstance(pm, str):
+            payment_method_id = pm  # string IS the payment method ID
         if payment_method_id:
             break
     if not payment_method_id:
         print(
-            f"[tau2] proactive-book: no payment_method_id in {payment_methods!r} ctx={context_id[:8]}",
+            f"[tau2] proactive-book: no payment_method_id found ctx={context_id[:8]}",
             flush=True,
         )
         return None
+    print(
+        f"[tau2] proactive-book payment_method_id={payment_method_id[:16]}... ctx={context_id[:8]}",
+        flush=True,
+    )
 
     # Build passengers list: user + saved_passengers (up to 3 total)
+    # saved_passengers may be dicts or strings (full names)
     passengers = []
     full_name = user_data.get("name", "")
     name_parts = full_name.split() if full_name else ["Noah", "Muller"]
@@ -449,18 +464,28 @@ def _try_build_book_reservation(session: list, context_id: str) -> dict | None:
     passengers.append(user_pax)
 
     saved = user_data.get("saved_passengers", [])
+    print(
+        f"[tau2] proactive-book saved_passengers len={len(saved)} ctx={context_id[:8]}",
+        flush=True,
+    )
     for p in saved[:2]:  # up to 2 more for total of 3
         pax: dict = {}
-        if "first_name" in p:
-            pax["first_name"] = p["first_name"]
-        if "last_name" in p:
-            pax["last_name"] = p["last_name"]
-        if "name" in p and "first_name" not in pax:
-            parts = p["name"].split()
+        if isinstance(p, dict):
+            if "first_name" in p:
+                pax["first_name"] = p["first_name"]
+            if "last_name" in p:
+                pax["last_name"] = p["last_name"]
+            if "name" in p and "first_name" not in pax:
+                parts = str(p["name"]).split()
+                pax["first_name"] = parts[0] if parts else ""
+                pax["last_name"] = parts[-1] if len(parts) > 1 else ""
+            if "dob" in p:
+                pax["dob"] = p["dob"]
+        elif isinstance(p, str):
+            # String format: "First Last"
+            parts = p.split()
             pax["first_name"] = parts[0] if parts else ""
             pax["last_name"] = parts[-1] if len(parts) > 1 else ""
-        if "dob" in p:
-            pax["dob"] = p["dob"]
         if pax.get("first_name"):
             passengers.append(pax)
 
