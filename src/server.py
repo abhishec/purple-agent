@@ -64,9 +64,11 @@ _BOOKING_PIVOT: str = (
 #   that language closes the compensation issue and causes user to say
 #   "I appreciate you noting that, I'll call back later." Keep issue OPEN.
 #   Use a more specific date question ("What week?") to advance booking.
-# Tier 3 (prev_resp>=5): Create proactive booking momentum — act as if we've
+# Tier 3 (prev_resp==5 ONLY): Create proactive booking momentum — act as if we've
 #   already started the search and just need one more detail (weekday/weekend).
-#   CRITICAL: Do NOT promise case escalation / team follow-up — that closes issue.
+#   FIRES EXACTLY ONCE. At prev>=6, let the LLM agent respond naturally to the
+#   user's concern ("I want to focus on the delay"), then standard append adds the
+#   booking question. Repeating T3 = broken record = user gives up.
 _COMPACT_PIVOT_T1: str = (
     "I hear you — that delay causing inconvenience was genuinely unfair, "
     "and I'm truly sorry. "
@@ -264,11 +266,12 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
     #
     # Tier progression:
     #   T1 (prev_resp=3): first denial — empathetic but clear + booking q
-    #   T2 (prev_resp=4): user has pushed back — acknowledge + note complaint + booking q
-    #   T3 (prev_resp>=5): user asks to escalate — give escalation promise + booking q
-    #     This is the key: user asked to escalate at turn 11 and got the same
-    #     denial again, causing "I'll call back." T3 addresses the escalation
-    #     request directly so the user feels heard and agrees to book.
+    #   T2 (prev_resp=4): user has pushed back — pure empathy + week question
+    #   T3 (prev_resp==5): ONE-TIME proactive search message + weekday/weekend q
+    #   prev_resp>=6: FALL THROUGH to standard append — let the LLM agent address
+    #     the user's concern naturally (they said "focus on the delayed flight");
+    #     the standard append ensures the booking question is still appended.
+    #     Replacing with T3 again at turns 6+ = broken record = user gives up.
     if prev_responds >= 3:
         is_comp_context = any(kw in content_lower for kw in _COMPENSATION_KEYWORDS)
         if is_comp_context:
@@ -278,27 +281,27 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
             elif prev_responds == 4:
                 pivot_msg = _COMPACT_PIVOT_T2
                 tier = "T2"
-            else:  # prev_responds >= 5
+            elif prev_responds == 5:  # Fire T3 EXACTLY ONCE
                 pivot_msg = _COMPACT_PIVOT_T3
                 tier = "T3"
-            parsed["arguments"]["content"] = pivot_msg
-            print(
-                f"[tau2] compact pivot override ({tier}, turn {prev_responds}) for ctx={context_id[:8]}",
-                flush=True,
-            )
-            return
+            else:
+                pivot_msg = None  # prev >= 6: let agent speak, standard append handles it
+            if pivot_msg is not None:
+                parsed["arguments"]["content"] = pivot_msg
+                print(
+                    f"[tau2] compact pivot override ({tier}, turn {prev_responds}) for ctx={context_id[:8]}",
+                    flush=True,
+                )
+                return
 
-    # ── Backstop: at 5+ responds, if agent response doesn't ask for travel date ──
-    # This fires when user asks a distraction question at turn 5+ (e.g., "how many
-    # passengers were on the delayed reservation?"). The agent would answer the
-    # factual question without a date question → user uses the answered question as
-    # an exit point ("Thanks! I'll call back later.").
-    # T3 replaces the factual answer with the "booking now = fastest path to comp
-    # resolution" message, keeping booking momentum even if the user's question
-    # isn't directly answered.
-    # Note: at this late stage (5+ turns), completing the booking trumps answering
-    # distraction questions.
-    if prev_responds >= 5 and not has_date_q:
+    # ── Backstop: at exactly 5 responds (T3-tier), if no comp keywords triggered ──
+    # Fires when user asks a distraction question at turn 5 (e.g. "how many
+    # passengers were on the delayed reservation?") and agent answers factually
+    # without comp keywords → would miss the T3 block above.
+    # Only fires at prev==5 — at prev>=6, fall through to standard append so the
+    # LLM agent can address user concerns (like "I want to talk about the delay")
+    # without broken-record T3 repetition.
+    if prev_responds == 5 and not has_date_q:
         parsed["arguments"]["content"] = _COMPACT_PIVOT_T3
         print(
             f"[tau2] compact pivot backstop T3 (no date q, turn {prev_responds}) for ctx={context_id[:8]}",
