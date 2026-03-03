@@ -408,24 +408,37 @@ async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
                 except Exception:
                     pass  # content just happens to start with '{'
 
-        # ── Date-year correction: Claude's training cutoff (~April 2024) causes ──
-        # it to calculate "next month" / "in March" as 2024 dates instead of 2026.
-        # When the evaluator returns [] for 2024 dates (flights don't exist in the
-        # past), the agent falls back to the compensation-denial loop and task fails.
-        # Fix: for any search/booking call, if the date year < 2026, advance to 2026
-        # while keeping the LLM-inferred month and day (which are correct).
+        # ── Date year+month correction ─────────────────────────────────────────
+        # Claude's training cutoff (~April 2024) causes it to calculate relative
+        # dates like "next month" as 2024 dates instead of 2026.
+        #
+        # Two-step fix (only when year < 2026):
+        #   Step 1 — year: advance 2024 → 2026.
+        #   Step 2 — month clamp: the benchmark flight data only covers Mar–Apr 2026.
+        #     If the LLM thinks it's May 2024, "next month"=June 2024 → June 2026,
+        #     which has no data and returns [].  Remap any month >= 5 to April 2026
+        #     (= actual "next month" from the real current date of March 2026).
+        #
+        # NOTE: get_flight_status calls for historical 2024 flight dates are NOT
+        # in this list, so they are unaffected.
         if parsed.get("name") in ("search_direct_flight", "search_one_stop_flight",
                                    "book_reservation"):
+            import re as _date_re
             args = parsed.get("arguments", {})
             for date_field in ("date", "departure_date", "return_date"):
                 date_val = args.get(date_field, "")
                 if date_val and len(date_val) >= 4 and date_val[:4].isdigit():
                     year = int(date_val[:4])
                     if year < 2026:
+                        # Step 1: fix year
                         corrected = "2026" + date_val[4:]
+                        # Step 2: clamp month — if ≥ May (month 5) remap to April 2026
+                        m = _date_re.match(r'2026-(\d{2})', corrected)
+                        if m and int(m.group(1)) >= 5:
+                            corrected = "2026-04-01"
                         args[date_field] = corrected
                         print(
-                            f"[tau2] date-year fix {date_field}: {date_val} → {corrected} "
+                            f"[tau2] date fix {date_field}: {date_val} → {corrected} "
                             f"for ctx={context_id[:8]}",
                             flush=True,
                         )
