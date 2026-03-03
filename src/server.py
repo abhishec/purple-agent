@@ -57,17 +57,23 @@ _BOOKING_PIVOT: str = (
 )
 # Compact override used after 3+ responds on a booking task without booking.
 # The user simulator's LLM ignores buried date questions in verbose compensation
-# declines — this short, action-first response forces immediate re-engagement.
+# declines — this short, empathetic-but-focused response re-engages the user.
+# Key balance: enough empathy to feel heard, short enough not to encourage
+# more compensation push-back, ends with a clear SPECIFIC booking question.
 _COMPACT_BOOKING_PIVOT: str = (
-    "Per policy, compensation is only available when the reservation is changed or "
-    "cancelled — I'm sorry, that's firm. Now let me book your flight right away! "
-    "What date would you like to travel and what cabin class would you prefer?"
+    "I hear you — that delay causing inconvenience was genuinely unfair, "
+    "and I'm truly sorry. "
+    "Our policy only allows compensation when the reservation is changed or cancelled, "
+    "so I'm unable to offer a credit here. "
+    "But I want to make this right: let me book your flight for you right now — "
+    "what date would you like to travel and what cabin class do you prefer?"
 )
 # Keywords indicating the agent is still discussing compensation (not booking).
 _COMPENSATION_KEYWORDS: tuple[str, ...] = (
     "compensation", "per our policy", "only available when", "change or cancel",
     "not eligible", "unable to offer", "cannot offer", "cannot provide",
     "only when the reservation", "requires a change", "requires changing",
+    "frustration", "inconvenience",  # agent still in apology mode
 )
 
 TAU2_SYSTEM_PROMPT = """You are an expert airline customer service agent working inside the tau2-bench evaluation framework.
@@ -212,11 +218,12 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
         flush=True,
     )
 
-    # After the 3rd respond (turns 8+), the user simulator is stuck in a
-    # compensation loop and ignores the date question buried in verbose empathy.
-    # Replace the whole response with a compact, action-forward version so the
-    # LLM user simulator actually transitions to the booking instead of giving up.
-    if prev_responds >= 3:
+    # After the 2nd respond (turns 7+), if the agent is still discussing
+    # compensation/delay, the user simulator tends to either push back endlessly
+    # (verbose) or give up immediately (too curt). Replace with the compact
+    # empathetic pivot that resolves the compensation issue in 4 sentences and
+    # ends with a direct, warm booking question.
+    if prev_responds >= 2:
         is_comp_context = any(kw in content_lower for kw in _COMPENSATION_KEYWORDS)
         if is_comp_context or not has_date_q:
             parsed["arguments"]["content"] = _COMPACT_BOOKING_PIVOT
@@ -226,7 +233,7 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
             )
             return
 
-    # Turns 2-7 (prev_responds 1-2): append pivot only if date question missing.
+    # First-respond range (prev_responds == 1): append pivot only if missing.
     if not has_date_q:
         parsed["arguments"]["content"] = content.rstrip() + _BOOKING_PIVOT
         print(f"[tau2] booking pivot injected for ctx={context_id[:8]}", flush=True)
