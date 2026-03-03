@@ -222,10 +222,26 @@ def _get_first_flight_from_session(session: list) -> dict | None:
         if stripped.startswith("[") and stripped.endswith("]"):
             try:
                 flights = json.loads(stripped)
-                if isinstance(flights, list) and flights and isinstance(flights[0], dict):
-                    # Sanity check: looks like flight objects (have numeric keys or known fields)
-                    if any(k in flights[0] for k in ("flight_number", "price", "origin", "legs")):
-                        return flights[0]
+                if isinstance(flights, list) and flights:
+                    # Method 3: nested list format [[leg1, leg2], ...] from search_onestop_flight
+                    if isinstance(flights[0], list):
+                        first_itin = flights[0]
+                        if first_itin and isinstance(first_itin[0], dict):
+                            legs = first_itin
+                            fnum = "+".join(
+                                str(l.get("flight_number", "")) for l in legs if l.get("flight_number")
+                            )
+                            fdate = legs[0].get("date", "") or legs[0].get("departure_date", "")
+                            price = sum(
+                                l.get("price", 0) for l in legs
+                                if isinstance(l.get("price", 0), (int, float))
+                            )
+                            cabin = legs[0].get("cabin", "economy")
+                            return {"flight_number": fnum, "date": fdate, "price": price, "cabin": cabin}
+                    # Method 2 (flat): list of flight dicts
+                    elif isinstance(flights[0], dict):
+                        if any(k in flights[0] for k in ("flight_number", "price", "origin", "legs")):
+                            return flights[0]
             except Exception:
                 pass
     return None
@@ -526,7 +542,7 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
     #   prev_resp>=7: FALL THROUGH to standard append
     if prev_responds >= 3:
         is_comp_context = any(kw in content_lower for kw in _COMPENSATION_KEYWORDS)
-        if is_comp_context:
+        if is_comp_context and not has_date_q:
             if prev_responds == 3:
                 # Build T1 with actual flight if the search found one
                 flight = _get_first_flight_from_session(session)
