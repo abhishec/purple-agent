@@ -379,24 +379,31 @@ def _try_build_book_reservation(session: list, context_id: str) -> dict | None:
         )
         return None
 
-    # Extract flight numbers + cabin from itinerary.
-    # Two formats observed in tau2-bench:
-    #   (a) List of dicts:   [{"flight_number": "HAT225", "cabin": "economy", ...}, ...]
-    #   (b) List of strings: ["HAT225", "HAT023"]  (flight numbers only, no cabin info)
+    # Extract flights (as dicts with flight_number + date) + prices + cabin.
+    # tau2-bench search_onestop_flight returns:
+    #   [[{flight_number, date, prices:{economy:N,...}, ...}, ...], ...]
+    # book_reservation expects flights=[{"flight_number": "X", "date": "Y"}, ...]
     try:
         first_elem = flight_itinerary[0]
+        flights = []
+        price_per_pax = 0
         if isinstance(first_elem, dict):
-            flights = [
-                str(leg.get("flight_number", ""))
-                for leg in flight_itinerary
-                if leg.get("flight_number")
-            ]
             cabin = first_elem.get("cabin", "economy")
+            for leg in flight_itinerary:
+                fn = leg.get("flight_number")
+                if fn:
+                    flights.append({
+                        "flight_number": str(fn),
+                        "date": str(leg.get("date", "2024-05-17")),
+                    })
+                    leg_prices = leg.get("prices", {})
+                    price_per_pax += int(leg_prices.get(cabin, leg_prices.get("economy", 0)))
         elif isinstance(first_elem, str):
-            flights = [str(fn) for fn in flight_itinerary if fn]
-            cabin = "economy"  # string format has no cabin field
+            cabin = "economy"
+            for fn in flight_itinerary:
+                if fn:
+                    flights.append({"flight_number": str(fn), "date": "2024-05-17"})
         else:
-            flights = []
             cabin = "economy"
             print(
                 f"[tau2] proactive-book: unknown itinerary element type {type(first_elem).__name__}"
@@ -412,7 +419,8 @@ def _try_build_book_reservation(session: list, context_id: str) -> dict | None:
         return None
 
     print(
-        f"[tau2] proactive-book flights={flights} cabin={cabin} ctx={context_id[:8]}",
+        f"[tau2] proactive-book flights={[f['flight_number'] for f in flights]} cabin={cabin}"
+        f" price_per_pax={price_per_pax} ctx={context_id[:8]}",
         flush=True,
     )
 
@@ -499,6 +507,11 @@ def _try_build_book_reservation(session: list, context_id: str) -> dict | None:
         if pax.get("first_name"):
             passengers.append(pax)
 
+    # Calculate exact total: price_per_pax * num_passengers (insurance="no", nonfree_bags=0)
+    num_pax = len(passengers)
+    total_price = price_per_pax * num_pax
+    payment_list = [{"payment_id": payment_method_id, "amount": total_price}]
+
     call = {
         "name": "book_reservation",
         "arguments": {
@@ -509,15 +522,15 @@ def _try_build_book_reservation(session: list, context_id: str) -> dict | None:
             "cabin": cabin,
             "flights": flights,
             "passengers": passengers,
-            "payment_methods": [payment_method_id],
+            "payment_methods": payment_list,
             "total_baggages": 0,
             "nonfree_baggages": 0,
             "insurance": "no",
         },
     }
     print(
-        f"[tau2] proactive-book built: flights={flights} cabin={cabin}"
-        f" pax={len(passengers)} pm={payment_method_id[:8]}... ctx={context_id[:8]}",
+        f"[tau2] proactive-book built: flights={[f['flight_number'] for f in flights]} cabin={cabin}"
+        f" pax={num_pax} total=${total_price} pm={payment_method_id[:8]}... ctx={context_id[:8]}",
         flush=True,
     )
     return call
