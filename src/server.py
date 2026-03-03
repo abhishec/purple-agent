@@ -451,13 +451,23 @@ def _try_build_book_reservation(session: list, context_id: str) -> dict | None:
 
     # Build passengers list: user + saved_passengers (up to 3 total)
     # saved_passengers may be dicts or strings (full names)
+    # name field may be a dict {"first_name": X, "last_name": Y} or string "First Last"
     passengers = []
-    full_name = user_data.get("name", "")
-    name_parts = full_name.split() if full_name else ["Noah", "Muller"]
-    user_pax: dict = {
-        "first_name": name_parts[0] if name_parts else "Noah",
-        "last_name": name_parts[-1] if len(name_parts) > 1 else "Muller",
-    }
+    name_obj = user_data.get("name", {})
+    if isinstance(name_obj, dict):
+        user_first = str(name_obj.get("first_name", "Noah"))
+        user_last = str(name_obj.get("last_name", "Muller"))
+    elif isinstance(name_obj, str) and name_obj:
+        _np = name_obj.split()
+        user_first = _np[0] if _np else "Noah"
+        user_last = _np[-1] if len(_np) > 1 else "Muller"
+    else:
+        user_first, user_last = "Noah", "Muller"
+    print(
+        f"[tau2] proactive-book user={user_first} {user_last} ctx={context_id[:8]}",
+        flush=True,
+    )
+    user_pax: dict = {"first_name": user_first, "last_name": user_last}
     dob = user_data.get("dob", "")
     if dob:
         user_pax["dob"] = dob
