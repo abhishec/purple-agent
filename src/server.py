@@ -55,6 +55,20 @@ _BOOKING_Q_PHRASES: tuple[str, ...] = (
 _BOOKING_PIVOT: str = (
     " What date would you like to travel and what cabin class would you prefer?"
 )
+# Compact override used after 3+ responds on a booking task without booking.
+# The user simulator's LLM ignores buried date questions in verbose compensation
+# declines — this short, action-first response forces immediate re-engagement.
+_COMPACT_BOOKING_PIVOT: str = (
+    "Per policy, compensation is only available when the reservation is changed or "
+    "cancelled — I'm sorry, that's firm. Now let me book your flight right away! "
+    "What date would you like to travel and what cabin class would you prefer?"
+)
+# Keywords indicating the agent is still discussing compensation (not booking).
+_COMPENSATION_KEYWORDS: tuple[str, ...] = (
+    "compensation", "per our policy", "only available when", "change or cancel",
+    "not eligible", "unable to offer", "cannot offer", "cannot provide",
+    "only when the reservation", "requires a change", "requires changing",
+)
 
 TAU2_SYSTEM_PROMPT = """You are an expert airline customer service agent working inside the tau2-bench evaluation framework.
 
@@ -189,14 +203,30 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
     if not (booking_task and prev_responds > 0 and not already_booked):
         return
 
-    # ── 4. Inject pivot if date/cabin question is missing ─────────────────────
+    # ── 4. Inject pivot ────────────────────────────────────────────────────────
     content_lower = content.lower()
     has_date_q = any(q in content_lower for q in _BOOKING_Q_PHRASES)
     print(
         f"[tau2] pivot-guard ctx={context_id[:8]} has_date_q={has_date_q} "
-        f"content_start={content[:60]!r}",
+        f"prev_resp={prev_responds} content_start={content[:60]!r}",
         flush=True,
     )
+
+    # After the 3rd respond (turns 8+), the user simulator is stuck in a
+    # compensation loop and ignores the date question buried in verbose empathy.
+    # Replace the whole response with a compact, action-forward version so the
+    # LLM user simulator actually transitions to the booking instead of giving up.
+    if prev_responds >= 3:
+        is_comp_context = any(kw in content_lower for kw in _COMPENSATION_KEYWORDS)
+        if is_comp_context or not has_date_q:
+            parsed["arguments"]["content"] = _COMPACT_BOOKING_PIVOT
+            print(
+                f"[tau2] compact pivot override (turn {prev_responds}) for ctx={context_id[:8]}",
+                flush=True,
+            )
+            return
+
+    # Turns 2-7 (prev_responds 1-2): append pivot only if date question missing.
     if not has_date_q:
         parsed["arguments"]["content"] = content.rstrip() + _BOOKING_PIVOT
         print(f"[tau2] booking pivot injected for ctx={context_id[:8]}", flush=True)
