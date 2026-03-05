@@ -1,6 +1,12 @@
-# Purple Agent
+# Business Process AI Worker
 
-A business-process AI agent built on the **Reflexive Agent Architecture** — a dual-process cognitive design that separates deterministic task logic from LLM reasoning to achieve reliable, auditable enterprise workflow execution.
+> One of four **mini AI workers built on BrainOS** — the Reflexive Agent Architecture framework that achieved **3/3 (100%)** on τ²-Bench. Each worker is a lightweight, self-contained cognitive unit that runs the same PRIME → EXECUTE → REFLECT loop tuned to its domain.
+
+**AgentX Phase 2 — Business Process Agent Track**
+
+---
+
+A business-process AI worker built on the **Reflexive Agent Architecture (BrainOS)** — a dual-process cognitive design that separates deterministic task logic from LLM reasoning to achieve reliable, auditable enterprise workflow execution.
 
 ---
 
