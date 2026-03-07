@@ -1001,11 +1001,15 @@ _CRM_DRIFT_NOTE = (
 
 
 def _extract_code_block(text: str) -> str:
-    """Pull Python code from ```python ... ``` or ``` ... ``` fences."""
+    """Pull Python code from ```python ... ``` or ``` ... ``` fences.
+
+    Takes the LAST code block — when LLM generates example + solution, the
+    solution is always last. Falls back to the first block if only one exists.
+    """
     import re as _re
-    m = _re.search(r'```(?:python)?\s*\n(.*?)```', text, _re.DOTALL)
-    if m:
-        return m.group(1).strip()
+    blocks = _re.findall(r'```(?:python)?\s*\n(.*?)```', text, _re.DOTALL)
+    if blocks:
+        return blocks[-1].strip()  # last block = final solution
     # No fence — return as-is if it looks like code
     if "print(" in text or "import " in text:
         return text.strip()
