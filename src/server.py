@@ -1151,8 +1151,9 @@ Date handling:
 - "last N months": from (today - N months) to today
 - "last N quarters": a quarter = 3 months, so last N quarters = last (N*3) months
 - "past N weeks": last N*7 days
-- Parse ISO dates: datetime.datetime.strptime(d, '%Y-%m-%dT%H:%M:%S.%f+0000') or .strptime(d, '%Y-%m-%d')
-- For timezone-aware dates: strip 'Z' or '+0000' suffix before parsing
+- Safe ISO date parse: d_clean = d.replace('Z','').replace('+0000','').split('.')[0]; dt.strptime(d_clean, '%Y-%m-%dT%H:%M:%S')
+- Simple date: dt.strptime(d, '%Y-%m-%d')
+- Get month name: date_obj.strftime('%B')  # e.g., 'September'
 
 CRITICAL output rules — violating these = wrong answer:
 - Print ONLY the final answer on the LAST line, nothing else after it
