@@ -1134,7 +1134,8 @@ _CODE_EXEC_SYSTEM = """You are a Python expert solving CRM analytics questions.
 - CSV text    → use csv.DictReader(io.StringIO(context_data)); collect rows with list(reader)
 - Mixed text  → parse with re or split()
 
-ALWAYS start your code with: import json, re, io, csv, datetime
+These are pre-imported for you: json, re, io, csv, datetime, Counter, defaultdict, itemgetter, dt (datetime.datetime alias), timedelta
+Use Counter for counting/frequency, defaultdict for groupby, itemgetter for sorting.
 
 Robustness rules:
 - Wrap JSON parse in try/except — fall back to CSV or string search if JSON fails
@@ -1208,10 +1209,16 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         return None
 
     # Prepend safe imports + context_data binding
-    full_code = (
+    _SANDBOX_HEADER = (
         "import json, re, io, csv, datetime\n"
-        f"context_data = {repr(ctx)}\n\n"
-        f"{code}"
+        "from collections import Counter, defaultdict\n"
+        "from operator import itemgetter\n"
+        "from datetime import datetime as dt, timedelta\n"
+    )
+    full_code = (
+        _SANDBOX_HEADER
+        + f"context_data = {repr(ctx)}\n\n"
+        + code
     )
     result, exec_error = _run_python_sandbox(full_code)
     if result:
@@ -1241,9 +1248,9 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         code2 = _extract_code_block(resp2.content[0].text)
         if code2:
             full_code2 = (
-                "import json, re, io, csv, datetime\n"
-                f"context_data = {repr(ctx)}\n\n"
-                f"{code2}"
+                _SANDBOX_HEADER
+                + f"context_data = {repr(ctx)}\n\n"
+                + code2
             )
             result2, _ = _run_python_sandbox(full_code2)
             if result2:
