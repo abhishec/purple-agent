@@ -1099,10 +1099,12 @@ def _is_refusal_response(answer: str) -> bool:
     return any(p in a_lower for p in refusal_patterns)
 
 
-async def _run_python_sandbox(code: str, timeout: int = 12) -> tuple[str | None, str | None]:
+async def _run_python_sandbox(code: str, timeout: int = 8) -> tuple[str | None, str | None]:
     """Execute Python code in async subprocess, return (stdout_last_line, stderr) or (None, error).
 
     Uses asyncio.create_subprocess_exec to avoid blocking the event loop.
+    Timeout is 8s (reduced from 12s) to stay safely within the 60s evaluator task timeout
+    when code_exec uses 2 LLM calls + 2 executions (max ~46s total).
     Returns (result, None) on success, (None, error_msg) on failure.
     """
     import tempfile, os
