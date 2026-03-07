@@ -1163,9 +1163,10 @@ Field aliases (handle both names): AssignedAgent=OwnerId, ClientId=AccountId,
 PersonRef=ContactId, StatusCode=Status, Title=Subject, Details=Description.
 
 Date handling:
-- "Today's date: YYYY-MM-DD" may appear in context — parse it to compute relative ranges
-- "last N months": from (today - N months) to today
-- "last N quarters": a quarter = 3 months, so last N quarters = last (N*3) months
+- "Today's date: YYYY-MM-DD" or "Current date: YYYY-MM-DD" may appear in context_data
+- Extract today: m = re.search(r"(?:today|current)['\"]?s? date[:\s]+(\d{4}-\d{2}-\d{2})", context_data, re.I); today = dt.strptime(m.group(1), '%Y-%m-%d') if m else dt.now()
+- "last N months": from (today - N months) to today; approx: today - timedelta(days=N*30)
+- "last N quarters": a quarter = 3 months, so last N quarters ≈ last N*90 days
 - "past N weeks": last N*7 days
 - Safe ISO date parse: d_clean = d.replace('Z','').replace('+0000','').split('.')[0]; dt.strptime(d_clean, '%Y-%m-%dT%H:%M:%S')
 - Simple date: dt.strptime(d, '%Y-%m-%d')
