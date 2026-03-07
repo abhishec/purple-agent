@@ -1131,32 +1131,37 @@ _CODE_EXEC_SYSTEM = """You are a Python expert solving CRM analytics questions.
 `context_data` is a pre-loaded string variable. Detect its format and parse it:
 - JSON array  → data = json.loads(context_data)      # list of dicts
 - JSON object → data = json.loads(context_data)      # single dict or nested
-- CSV text    → import io, csv; reader = csv.DictReader(io.StringIO(context_data))
+- CSV text    → use csv.DictReader(io.StringIO(context_data)); collect rows with list(reader)
 - Mixed text  → parse with re or split()
 
-ALWAYS start your code with: import json, re, io, csv
+ALWAYS start your code with: import json, re, io, csv, datetime
+
+Robustness rules:
+- Wrap JSON parse in try/except — fall back to CSV or string search if JSON fails
+- When accessing dict keys, try aliases: record.get('OwnerId') or record.get('AssignedAgent')
+- Check for None/null values before arithmetic: skip records where field is None
+- For CSV: first check if context_data.strip().startswith('[') before trying CSV
 
 Field aliases (handle both names): AssignedAgent=OwnerId, ClientId=AccountId,
 PersonRef=ContactId, StatusCode=Status, Title=Subject, Details=Description.
-When accessing dict keys, try both names: record.get('OwnerId') or record.get('AssignedAgent')
 
 Date handling:
 - "Today's date: YYYY-MM-DD" may appear in context — parse it to compute relative ranges
 - "last N months": from (today - N months) to today
 - "last N quarters": a quarter = 3 months, so last N quarters = last (N*3) months
 - "past N weeks": last N*7 days
-- Use datetime.strptime() for ISO dates, dateutil.parser for other formats
-- If dateutil not available: use manual parsing with datetime.strptime('%Y-%m-%d', ...)
+- Parse ISO dates: datetime.datetime.strptime(d, '%Y-%m-%dT%H:%M:%S.%f+0000') or .strptime(d, '%Y-%m-%d')
+- For timezone-aware dates: strip 'Z' or '+0000' suffix before parsing
 
 CRITICAL output rules — violating these = wrong answer:
-- Print ONLY the final answer, nothing else
+- Print ONLY the final answer on the LAST line, nothing else after it
 - IDs: exact ID string as-is (e.g., 005Wt000003NIiTIAW)
 - Names/values: exact string as in data
 - Months: full name (January, February, ... December)
-- Numbers: just the number (e.g., 42 or 3.5)
-- States: 2-letter code (e.g., CA)
+- Numbers: just the number (e.g., 42 or 3.5); for counts/totals use int not float if whole number
+- States: 2-letter code (e.g., CA) unless data has full name
 - Dates: as they appear in the data
-- If multiple matches: print the single best answer
+- If multiple matches: print the single best/highest/most answer
 - If data records are empty or no relevant records exist: print exactly None
 
 Always wrap code in ```python\\n...\\n``` fences."""
