@@ -1091,31 +1091,37 @@ def _is_refusal_response(answer: str) -> bool:
     return any(p in a_lower for p in refusal_patterns)
 
 
-def _run_python_sandbox(code: str, timeout: int = 12) -> tuple[str | None, str | None]:
-    """Execute Python code in subprocess, return (stdout_last_line, stderr) or (None, error).
+async def _run_python_sandbox(code: str, timeout: int = 12) -> tuple[str | None, str | None]:
+    """Execute Python code in async subprocess, return (stdout_last_line, stderr) or (None, error).
 
+    Uses asyncio.create_subprocess_exec to avoid blocking the event loop.
     Returns (result, None) on success, (None, error_msg) on failure.
     """
-    import subprocess, tempfile, os
+    import tempfile, os
     fname = None
     try:
         with tempfile.NamedTemporaryFile(suffix='.py', mode='w', delete=False, dir='/tmp') as f:
             f.write(code)
             fname = f.name
-        result = subprocess.run(
-            ["python3", fname],
-            capture_output=True, text=True, timeout=timeout,
+        proc = await asyncio.create_subprocess_exec(
+            "python3", fname,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()  # drain pipes
+            return None, "code execution timed out"
+        stdout = stdout_b.decode("utf-8", errors="replace").strip()
+        stderr = stderr_b.decode("utf-8", errors="replace").strip()
         if stdout:
             # Take only the last non-empty line (avoids debug print contamination)
             lines = [l.strip() for l in stdout.splitlines() if l.strip()]
             return lines[-1] if lines else None, None
         # Return stderr for retry hints
         return None, (stderr[:500] if stderr else "no output produced")
-    except subprocess.TimeoutExpired:
-        return None, "code execution timed out"
     except Exception as e:
         return None, str(e)[:200]
     finally:
@@ -1221,7 +1227,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         + f"context_data = {repr(ctx)}\n\n"
         + code
     )
-    result, exec_error = _run_python_sandbox(full_code)
+    result, exec_error = await _run_python_sandbox(full_code)
     if result:
         print(f"[crm-exec] cat={category} exec→{result[:60]!r}", flush=True)
         return result
@@ -1253,7 +1259,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
                 + f"context_data = {repr(ctx)}\n\n"
                 + code2
             )
-            result2, _ = _run_python_sandbox(full_code2)
+            result2, _ = await _run_python_sandbox(full_code2)
             if result2:
                 print(f"[crm-exec] retry cat={category} exec→{result2[:60]!r}", flush=True)
                 return result2
