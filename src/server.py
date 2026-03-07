@@ -1300,7 +1300,9 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "- If the answer is a date: return in same format as in data\n"
             "One value only. Nothing else."
         )
-        user_msg = f"Question: {prompt}\n\nCRM Context:\n{context[:8000]}"
+        # Analytical fallback needs more context — code_exec already failed so give Sonnet more
+        ctx_limit = 20000 if category in _CRM_ANALYTICAL_CATEGORIES else 8000
+        user_msg = f"Question: {prompt}\n\nCRM Context:\n{context[:ctx_limit]}"
 
     is_analytical = category in _CRM_ANALYTICAL_CATEGORIES
     # text_qa needs longer answers (knowledge articles, policy reasoning)
