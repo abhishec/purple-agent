@@ -1402,6 +1402,22 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
         print(f"[crm] refusal→None cat={category} orig={answer[:60]!r}", flush=True)
         answer = "None"
 
+    # ── Post-process: strip common LLM prefix noise from short answers ────────
+    # e.g. "The answer is September." → "September"
+    # Only for analytical categories where answer should be a short exact value.
+    if answer and category in _CRM_ANALYTICAL_CATEGORIES:
+        import re as _re_pp
+        # Strip leading prefixes
+        stripped = _re_pp.sub(
+            r'^(?:the answer is|answer is|answer:|result:|the result is|the value is)\s*',
+            answer.strip(), flags=_re_pp.IGNORECASE
+        )
+        # Strip trailing period if it looks like an added punctuation (not part of ID)
+        stripped = stripped.rstrip('.')
+        if stripped and stripped != answer:
+            print(f"[crm] strip-prefix cat={category} {answer[:40]!r}→{stripped!r}", flush=True)
+            answer = stripped
+
     # ── Record outcome to Brain (all 5 layers, zero LLM cost) ─────────────────
     if _crm_router is not None:
         reward = _crm_router.reward(answer, strategy)
