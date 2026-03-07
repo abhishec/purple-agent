@@ -1171,14 +1171,15 @@ These are pre-imported for you: json, re, io, csv, datetime, Counter, defaultdic
 Use Counter for counting/frequency, defaultdict for groupby, itemgetter for sorting.
 
 Robustness rules:
-- Wrap JSON parse in try/except — fall back to CSV or string search if JSON fails
-- If context_data has a header (e.g. "Today's date: ...") before JSON, find the JSON start:
-  start = context_data.find('[') if '[' in context_data else context_data.find('{'); data = json.loads(context_data[start:]) if start >= 0 else []
-- If data is a dict (not list), check if records are under a key: records = data.get('records') or data.get('data') or data.get('results') or [data]
+- Parse JSON safely:
+  try: data = json.loads(context_data)
+  except: stripped = context_data[re.search(r'[\[{]', context_data).start():] if re.search(r'[\[{]', context_data) else '[]'; data = json.loads(stripped)
+- If data is a dict (not list), check if records are under a key: data = data.get('records') or data.get('data') or data.get('results') or [data]
+- After parsing, ensure data is a list: if not isinstance(data, list): data = [data]
 - Inspect first record's keys to find actual field names: keys = list(data[0].keys()) if data else []
 - When accessing dict keys, try aliases: record.get('OwnerId') or record.get('AssignedAgent')
 - Check for None/null values before arithmetic: skip records where field is None or field == ''
-- For CSV: first check if context_data.strip().startswith('[') before trying CSV
+- For CSV: use only if JSON parse completely fails and data starts with a header row
 - Integer output: if result is a whole number, use int(result) to avoid '3.0' instead of '3'
 
 Field aliases (handle both names): AssignedAgent=OwnerId, ClientId=AccountId,
