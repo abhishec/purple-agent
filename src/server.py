@@ -1183,7 +1183,8 @@ Robustness rules:
 - Parse JSON safely:
   try: data = json.loads(context_data)
   except: stripped = context_data[re.search(r'[\[{]', context_data).start():] if re.search(r'[\[{]', context_data) else '[]'; data = json.loads(stripped)
-- If data is a dict (not list), check if records are under a key: data = data.get('records') or data.get('data') or data.get('results') or [data]
+- If data is a dict (not list), find the list with the most records:
+  if isinstance(data, dict): lists = [(k,v) for k,v in data.items() if isinstance(v,list)]; data = max(lists, key=lambda x: len(x[1]))[1] if lists else [data]
 - After parsing, ensure data is a list: if not isinstance(data, list): data = [data]
 - Inspect first record's keys to find actual field names: keys = list(data[0].keys()) if data else []
 - When accessing dict keys, try aliases: record.get('OwnerId') or record.get('AssignedAgent')
