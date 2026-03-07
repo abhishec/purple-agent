@@ -1126,12 +1126,18 @@ async def _run_python_sandbox(code: str, timeout: int = 8) -> tuple[str | None, 
             return None, "code execution timed out"
         stdout = stdout_b.decode("utf-8", errors="replace").strip()
         stderr = stderr_b.decode("utf-8", errors="replace").strip()
-        if stdout:
+        exit_ok = proc.returncode == 0
+        if stdout and exit_ok:
             # Take only the last non-empty line (avoids debug print contamination)
             lines = [l.strip() for l in stdout.splitlines() if l.strip()]
             return lines[-1] if lines else None, None
-        # Return stderr for retry hints
-        return None, (stderr[:500] if stderr else "no output produced")
+        if stderr:
+            # Non-zero exit or error: pass stderr to retry as an error hint
+            return None, stderr[:500]
+        if stdout and not exit_ok:
+            # Had partial output but crashed — last line might be garbage, use stderr
+            return None, f"Script exited with code {proc.returncode} after printing: {stdout[-100:]}"
+        return None, "no output produced"
     except Exception as e:
         return None, str(e)[:200]
     finally:
