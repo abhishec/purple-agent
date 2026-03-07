@@ -1285,7 +1285,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "If the context does not contain the answer, respond with exactly: None\n"
             "No explanation, no prefix, no punctuation at the end. Just the answer."
         )
-        user_msg = f"Question: {prompt}\n\nContext:\n{context[:12000]}"
+        user_msg = f"Question: {prompt}\n\nContext:\n{context[:16000]}"
     else:
         system_prompt = (
             f"You are a {persona} answering a CRM lookup question.\n"
@@ -1363,11 +1363,13 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
 
     # ── Early None return: no real data → expected answer is "None" ──────────
     # 27% of tasks have empty/policy-only context with expected_answer='None'.
-    # Applies to ALL analytical categories regardless of strategy (router might
-    # select llm_direct for categories like internal_operation_data).
-    if (category in _CRM_ANALYTICAL_CATEGORIES
-            and not _context_has_real_data(context)):
+    # Analytical: check for structured data (JSON/CSV/tables).
+    # Text QA: check for any meaningful content (knowledge articles can be plain text).
+    if category in _CRM_ANALYTICAL_CATEGORIES and not _context_has_real_data(context):
         print(f"[crm] no-data task cat={category} → None", flush=True)
+        return "None"
+    if category in _CRM_TEXT_CATEGORIES and (not context or len(context.strip()) < 30):
+        print(f"[crm] no-content task cat={category} → None", flush=True)
         return "None"
 
     # ── Execute chosen strategy with DAAO-selected model ─────────────────────
