@@ -1153,9 +1153,11 @@ Use Counter for counting/frequency, defaultdict for groupby, itemgetter for sort
 
 Robustness rules:
 - Wrap JSON parse in try/except — fall back to CSV or string search if JSON fails
+- Inspect first record's keys to find actual field names: keys = list(data[0].keys()) if data else []
 - When accessing dict keys, try aliases: record.get('OwnerId') or record.get('AssignedAgent')
 - Check for None/null values before arithmetic: skip records where field is None
 - For CSV: first check if context_data.strip().startswith('[') before trying CSV
+- Integer output: if result is a whole number, use int(result) to avoid '3.0' instead of '3'
 
 Field aliases (handle both names): AssignedAgent=OwnerId, ClientId=AccountId,
 PersonRef=ContactId, StatusCode=Status, Title=Subject, Details=Description.
