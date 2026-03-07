@@ -1209,7 +1209,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
 
     # Prepend safe imports + context_data binding
     full_code = (
-        "import json, re, io, csv\n"
+        "import json, re, io, csv, datetime\n"
         f"context_data = {repr(ctx)}\n\n"
         f"{code}"
     )
@@ -1241,7 +1241,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         code2 = _extract_code_block(resp2.content[0].text)
         if code2:
             full_code2 = (
-                "import json, re, io, csv\n"
+                "import json, re, io, csv, datetime\n"
                 f"context_data = {repr(ctx)}\n\n"
                 f"{code2}"
             )
