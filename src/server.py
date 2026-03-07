@@ -1312,12 +1312,14 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     return None
 
 
-async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str, model: str | None = None) -> str:
+async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str, model: str | None = None, timeout: float = 25.0) -> str:
     """Direct LLM answer — used for privacy categories and as fallback.
 
     Args:
         model: DAAO-selected model. Privacy refusals always use fast model.
                Lookup answers use the DAAO-selected model (Haiku or Sonnet).
+        timeout: max seconds to wait for LLM response (default 25s).
+                 Callers can pass remaining task budget to stay within 60s limit.
     """
     import anthropic as _anthropic
 
@@ -1387,8 +1389,8 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     # Low temperature for precise value extraction; slightly higher for text reasoning
     temperature = 0.3 if is_text_qa else 0.1
     client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-    # 25s timeout: allows for slow Sonnet responses while staying within 60s task limit
-    # For code_exec fallback: 20s(gen)+8s(exec)+25s(llm_direct) = 53s < 60s
+    # Dynamic timeout: caller can pass remaining task budget to stay within 60s limit
+    llm_timeout = min(timeout, 25.0)  # cap at 25s even if caller gives more
     try:
         resp = await asyncio.wait_for(
             client.messages.create(
@@ -1398,7 +1400,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_msg}],
             ),
-            timeout=25.0,
+            timeout=llm_timeout,
         )
         return resp.content[0].text.strip()
     except asyncio.TimeoutError:
@@ -1491,12 +1493,13 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
                     answer = "None"
                 else:
                     # Has data but code failed — try llm_direct with Sonnet
-                    # Only if we have enough time left (need at least 12s for LLM call)
+                    # Only if we have enough time left (need at least 8s for LLM call)
                     _elapsed = time.monotonic() - _task_start
-                    if _elapsed < 45.0:
-                        print(f"[crm] exec fallback for cat={category} (elapsed={_elapsed:.1f}s)", flush=True)
+                    _remaining = max(56.0 - _elapsed, 5.0)
+                    if _remaining > 8.0:
+                        print(f"[crm] exec fallback for cat={category} (elapsed={_elapsed:.1f}s, remaining={_remaining:.1f}s)", flush=True)
                         # Use Sonnet (not DAAO model) for analytics fallback too
-                        answer = await _crm_llm_direct(prompt, context, persona, category, model=FALLBACK_MODEL)
+                        answer = await _crm_llm_direct(prompt, context, persona, category, model=FALLBACK_MODEL, timeout=_remaining)
                         strategy = "llm_direct"  # update strategy for reward signal
                     else:
                         print(f"[crm] skip fallback (too slow {_elapsed:.1f}s) cat={category} → None", flush=True)
