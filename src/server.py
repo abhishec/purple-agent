@@ -1059,6 +1059,21 @@ def _is_refusal_response(answer: str) -> bool:
         "i need more information",
         "unable to answer",
         "cannot be answered",
+        # Additional patterns for "I need to do X but can't" responses
+        "i need to find the agent",
+        "i need to analyze",
+        "i need to look",
+        "i need the actual",
+        "no actual data",
+        "no case records",
+        "no relevant records",
+        "not provided",
+        "no matching",
+        "cannot determine",
+        "not enough information",
+        "insufficient information",
+        "i would need",
+        "task failed",
     ]
     return any(p in a_lower for p in refusal_patterns)
 
