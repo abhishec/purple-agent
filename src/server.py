@@ -1146,10 +1146,10 @@ async def _run_python_sandbox(code: str, timeout: int = 8) -> tuple[str | None, 
             lines = [l.strip() for l in stdout.splitlines() if l.strip()]
             result = lines[-1] if lines else None
             if result:
-                # Normalize "3.0" → "3": CRM answers are counts/totals, never need ".0"
+                # Normalize "3.0" / "3.00" / "3.000" → "3": CRM counts/totals never need trailing zeros
                 import re as _re_sandbox
-                if _re_sandbox.match(r'^-?\d+\.0$', result):
-                    result = result[:-2]
+                if _re_sandbox.match(r'^-?\d+\.0+$', result):
+                    result = str(int(float(result)))
             return result, None
         if stderr:
             # Non-zero exit or error: pass stderr to retry as an error hint
@@ -1176,8 +1176,10 @@ _CODE_EXEC_SYSTEM = """You are a Python expert solving CRM analytics questions.
 - CSV text    → use csv.DictReader(io.StringIO(context_data)); collect rows with list(reader)
 - Mixed text  → parse with re or split()
 
-These are pre-imported for you: json, re, io, csv, datetime, Counter, defaultdict, itemgetter, dt (datetime.datetime alias), timedelta
+These are pre-imported for you: json, re, io, csv, datetime, math, statistics, itertools, Counter, defaultdict, itemgetter, dt (datetime.datetime alias), timedelta
 Use Counter for counting/frequency, defaultdict for groupby, itemgetter for sorting.
+Use statistics.mean() for averages, statistics.median() for medians.
+Use _safe_date(d) for robust date parsing (handles ISO8601, timezones, YYYY-MM-DD, MM/DD/YYYY).
 
 Robustness rules:
 - Parse JSON safely:
@@ -1196,25 +1198,34 @@ Field aliases (handle both names): AssignedAgent=OwnerId, ClientId=AccountId,
 PersonRef=ContactId, StatusCode=Status, Title=Subject, Details=Description.
 
 Date handling:
+- ALWAYS use _safe_date(d) instead of manual strptime — it handles all formats and timezones
 - "Today's date: YYYY-MM-DD" or "Current date: YYYY-MM-DD" may appear in context_data
-- Extract today: m = re.search(r"(?:today|current)['\"]?s? date[:\s]+(\d{4}-\d{2}-\d{2})", context_data, re.I); today = dt.strptime(m.group(1), '%Y-%m-%d') if m else dt.now()
-- "last N months": from (today - N months) to today; approx: today - timedelta(days=N*30)
-- "last N quarters": a quarter = 3 months, so last N quarters ≈ last N*90 days
-- "past N weeks": last N*7 days
-- Safe ISO date parse: d_clean = d.replace('Z','').replace('+0000','').split('.')[0]; dt.strptime(d_clean, '%Y-%m-%dT%H:%M:%S')
-- Simple date: dt.strptime(d, '%Y-%m-%d')
-- Get month name: date_obj.strftime('%B')  # e.g., 'September'
+- Extract today: m = re.search(r"(?:today|current)['\"]?s? date[:\s]+(\d{4}-\d{2}-\d{2})", context_data, re.I); today = _safe_date(m.group(1)) if m else dt.now()
+- Filter dates: [r for r in data if _safe_date(r.get('CreatedDate')) and _safe_date(r.get('CreatedDate')) >= cutoff]
+- "last N months": cutoff = today - timedelta(days=N*30)
+- "last N quarters": cutoff = today - timedelta(days=N*90)
+- "past N weeks": cutoff = today - timedelta(days=N*7)
+- Get month name: _safe_date(d).strftime('%B')  # e.g., 'September'
+- Count by month: use Counter({d.strftime('%B'): count for d, count in ...})
+
+Conversion rate / percentage:
+- If data has IsConverted/is_converted field: rate = sum(1 for r in data if r.get('IsConverted')) / len(data) * 100
+- If data has a numeric rate/percentage field: use the value as-is (may be 25.5 or 0.255 — return what's in data)
+- Round to 2 decimal places: round(rate, 2)
 
 CRITICAL output rules — violating these = wrong answer:
 - Print ONLY the final answer on the LAST line, nothing else after it
+- After printing the final answer, do NOT print anything else (no "Done", no debug, no explanation)
 - IDs: exact ID string as-is (e.g., 005Wt000003NIiTIAW)
 - Names/values: exact string as in data
-- Months: full name (January, February, ... December)
-- Numbers: just the number (e.g., 42 or 3.5); for counts/totals use int not float if whole number
+- Months: full month name (January, February, ... December) — use strftime('%B'), never use month number
+- Numbers: just the number (e.g., 42 or 3.5); for counts/totals use int() to avoid trailing .0
+- Rates/percentages: decimal form as in data or calculated (e.g., 25.5 not "25.5%")
 - States: 2-letter code (e.g., CA) unless data has full name
 - Dates: as they appear in the data
 - If multiple matches: print the single best/highest/most answer
-- If data records are empty or no relevant records exist: print exactly None
+- Count questions with 0 results: print 0 (not None — zero is a valid count)
+- If data records are empty or question asks to find/identify something that doesn't exist: print exactly None
 
 Always wrap code in ```python\\n...\\n``` fences."""
 
@@ -1265,11 +1276,24 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         return None
 
     # Prepend safe imports + context_data binding
+    # _safe_date: robust date parser that handles ISO8601, timezones, simple YYYY-MM-DD
     _SANDBOX_HEADER = (
-        "import json, re, io, csv, datetime\n"
+        "import json, re, io, csv, datetime, math, statistics, itertools\n"
         "from collections import Counter, defaultdict\n"
         "from operator import itemgetter\n"
         "from datetime import datetime as dt, timedelta\n"
+        "def _safe_date(d):\n"
+        "    '''Parse date string to datetime, handling ISO8601, timezones, YYYY-MM-DD.'''\n"
+        "    if not d: return None\n"
+        "    s = str(d).strip()\n"
+        "    # Strip timezone suffix: Z, +00:00, +0000, .000Z, .000+00:00\n"
+        "    s = re.sub(r'[+-]\\d{2}:?\\d{2}$', '', s.replace('Z', '').split('.')[0])\n"
+        "    for fmt in ['%Y-%m-%dT%H:%M:%S', '%Y-%m-%d', '%m/%d/%Y', '%d/%m/%Y', '%Y/%m/%d']:\n"
+        "        try: return dt.strptime(s, fmt)\n"
+        "        except: pass\n"
+        "    # Last resort: try parsing just the date portion\n"
+        "    try: return dt.strptime(s[:10], '%Y-%m-%d')\n"
+        "    except: return None\n"
     )
     full_code = (
         _SANDBOX_HEADER
