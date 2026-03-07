@@ -968,6 +968,13 @@ except ImportError:
     print("[crm] brainos_core not available — using fallback routing", flush=True)
 
 
+# ── Sandbox concurrency limit: prevent resource exhaustion with many concurrent tasks
+# With max_steps=1 and 2140 tasks, evaluator may send 50+ concurrent requests.
+# Each sandbox spawns a Python subprocess — limit concurrent executions to 15.
+# Tasks beyond limit wait in queue (asyncio.Semaphore doesn't block event loop).
+_sandbox_semaphore = asyncio.Semaphore(15)
+
+
 # ── CRM: analytical categories that need code execution ───────────────────────
 _CRM_ANALYTICAL_CATEGORIES = {
     # Numerical computation / aggregation — needs Python code execution
@@ -1110,25 +1117,27 @@ async def _run_python_sandbox(code: str, timeout: int = 8) -> tuple[str | None, 
     Uses asyncio.create_subprocess_exec to avoid blocking the event loop.
     Timeout is 8s (reduced from 12s) to stay safely within the 60s evaluator task timeout
     when code_exec uses 2 LLM calls + 2 executions (max ~46s total).
+    Limited by _sandbox_semaphore (15 concurrent) to avoid resource exhaustion.
     Returns (result, None) on success, (None, error_msg) on failure.
     """
     import tempfile, os
     fname = None
     try:
-        with tempfile.NamedTemporaryFile(suffix='.py', mode='w', delete=False, dir='/tmp') as f:
-            f.write(code)
-            fname = f.name
-        proc = await asyncio.create_subprocess_exec(
-            "python3", fname,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()  # drain pipes
-            return None, "code execution timed out"
+        async with _sandbox_semaphore:
+            with tempfile.NamedTemporaryFile(suffix='.py', mode='w', delete=False, dir='/tmp') as f:
+                f.write(code)
+                fname = f.name
+            proc = await asyncio.create_subprocess_exec(
+                "python3", fname,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()  # drain pipes
+                return None, "code execution timed out"
         stdout = stdout_b.decode("utf-8", errors="replace").strip()
         stderr = stderr_b.decode("utf-8", errors="replace").strip()
         exit_ok = proc.returncode == 0
