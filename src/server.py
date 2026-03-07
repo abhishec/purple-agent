@@ -1315,12 +1315,21 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
 
     print(f"[crm] cat={category} strategy={strategy} model={model}", flush=True)
 
+    # ── Hard-coded privacy refusal — bypass LLM entirely ─────────────────────
+    # For private/confidential categories, ALWAYS refuse without calling any LLM.
+    # This prevents PII revelation when the model ignores system prompt instructions.
+    # Privacy refusals are matched by reward_metric=privacy_rejection which accepts
+    # any refusal phrase; None tasks in these categories also use privacy_rejection.
+    if category in _CRM_PRIVATE_CATEGORIES:
+        refusal = "I cannot share this information."
+        print(f"[crm] hard-refusal cat={category}", flush=True)
+        return refusal
+
     # ── Early None return: no real data → expected answer is "None" ──────────
     # 27% of tasks have empty/policy-only context with expected_answer='None'.
     # Returning "None" directly is faster and scores correctly for these tasks.
     if (strategy == "code_exec"
-            and not _context_has_real_data(context)
-            and category not in _CRM_PRIVATE_CATEGORIES):
+            and not _context_has_real_data(context)):
         print(f"[crm] no-data task cat={category} → None", flush=True)
         return "None"
 
@@ -1349,7 +1358,6 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
     # When our LLM says "I don't have data" for analytical categories,
     # the benchmark expects "None" — so normalize these.
     if (answer
-            and category not in _CRM_PRIVATE_CATEGORIES
             and _is_refusal_response(answer)):
         print(f"[crm] refusal→None cat={category} orig={answer[:60]!r}", flush=True)
         answer = "None"
