@@ -1457,10 +1457,16 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
         print(f"[crm] refusal→None cat={category} orig={answer[:60]!r}", flush=True)
         answer = "None"
 
+    # ── Post-process: normalize None variants → "None" ───────────────────────
+    # LLMs may return "none", "null", "n/a" when they mean no-data. Normalize
+    # to exact "None" which is what the benchmark expects for missing-data tasks.
+    if answer and answer.strip().lower() in {"none", "null", "n/a", "na", "undefined"}:
+        answer = "None"
+
     # ── Post-process: strip common LLM prefix noise from short answers ────────
     # e.g. "The answer is September." → "September"
     # Only for analytical categories where answer should be a short exact value.
-    if answer and category in _CRM_ANALYTICAL_CATEGORIES:
+    if answer and answer != "None" and category in _CRM_ANALYTICAL_CATEGORIES:
         import re as _re_pp
         # Strip leading prefixes
         stripped = _re_pp.sub(
