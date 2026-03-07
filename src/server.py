@@ -1230,6 +1230,84 @@ CRITICAL output rules — violating these = wrong answer:
 Always wrap code in ```python\\n...\\n``` fences."""
 
 
+# Category-specific hints injected into code generation prompt to guide computation approach
+_CRM_CATEGORY_HINTS = {
+    "monthly_trend_analysis": (
+        "Find which month has highest/lowest value. "
+        "Use _safe_date(d).strftime('%B') for month names. "
+        "Group by month, then find max/min."
+    ),
+    "lead_routing": (
+        "Determine which agent/team handles the lead based on routing rules. "
+        "Look for lead score, source, region, or product fields."
+    ),
+    "case_routing": (
+        "Find which queue/agent handles the case. "
+        "Check priority, category, region, product fields."
+    ),
+    "transfer_count": (
+        "Count how many times the case was transferred. "
+        "Look for TransferCount field or count status changes."
+    ),
+    "sales_amount_understanding": (
+        "Calculate sum, average, or find specific sales amounts. "
+        "Look for Amount, TotalAmount, Revenue fields."
+    ),
+    "handle_time": (
+        "Calculate handle time between open/close timestamps. "
+        "Use _safe_date() for dates; compute timedelta in minutes or hours."
+    ),
+    "conversion_rate_comprehension": (
+        "Calculate conversion rate: converted/total * 100. "
+        "Look for IsConverted, ConvertedDate, or Status='Closed Won' fields."
+    ),
+    "best_region_identification": (
+        "Find which region/state has highest metric. "
+        "Group by region/state field, sum/count, find max."
+    ),
+    "lead_qualification": (
+        "Identify qualified leads. "
+        "Check LeadScore, Status, or qualification criteria fields."
+    ),
+    "activity_priority": (
+        "Sort/find activities by priority or urgency. "
+        "Check Priority, DueDate, Status fields."
+    ),
+    "wrong_stage_rectification": (
+        "Identify deals/leads in incorrect stages. "
+        "Compare StageName with expected progression; find anomalies."
+    ),
+    "sales_cycle_understanding": (
+        "Analyze time between sales stages. "
+        "Use _safe_date() on CreatedDate and CloseDate; compute duration."
+    ),
+    "sales_insight_mining": (
+        "Extract sales insights: top performers, trends, patterns. "
+        "Aggregate by agent, region, product, or time period."
+    ),
+    "top_issue_identification": (
+        "Find most frequent case category/issue type. "
+        "Use Counter on category/type field; find most_common(1)[0]."
+    ),
+    "named_entity_disambiguation": (
+        "Identify which specific entity matches the criteria when duplicates exist. "
+        "Filter by ID, date, or related object to disambiguate."
+    ),
+    "invalid_config": (
+        "Find config records with invalid/missing required values. "
+        "Check for None, empty, out-of-range, or rule-violating values."
+    ),
+    "internal_operation_data": (
+        "Extract internal operational metrics. "
+        "Look for SLA, escalation, response time, or throughput fields."
+    ),
+    "quote_approval": (
+        "Find quotes needing approval. "
+        "Check ApprovalStatus, Amount vs threshold, or workflow stage."
+    ),
+}
+
+
 async def _crm_code_exec(prompt: str, context: str, category: str, model: str | None = None) -> str | None:
     """Two-stage: generate Python code via Sonnet, execute, return answer.
 
@@ -1248,8 +1326,10 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     if len(ctx) > 30000:
         ctx = ctx[:30000]
 
+    # Add category-specific hint to guide computation approach
+    _cat_hint = _CRM_CATEGORY_HINTS.get(category, "")
     user_msg = (
-        f"Category: {category}\n"
+        f"Category: {category}" + (f" — Hint: {_cat_hint}" if _cat_hint else "") + "\n"
         f"Question: {prompt}\n\n"
         f"CRM Data:\n{ctx}"
     )
