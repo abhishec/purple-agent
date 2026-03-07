@@ -1305,16 +1305,31 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         print(f"[crm-exec] cat={category} exec→{result[:60]!r}", flush=True)
         return result
 
-    # Retry: provide the actual error AND previous code to help the model fix specifically
+    # Retry: provide error + previous code + actual field names to fix specifically
     error_hint = f"Error from previous attempt: {exec_error}" if exec_error else "Previous code produced no output"
+    # Extract actual field names from the JSON data to help fix KeyError failures
+    _field_hint = ""
+    try:
+        import json as _j
+        _ctx_data = _j.loads(ctx)
+        if isinstance(_ctx_data, list) and _ctx_data:
+            _field_hint = f"\nActual fields in data[0]: {list(_ctx_data[0].keys())}"
+        elif isinstance(_ctx_data, dict):
+            for _v in _ctx_data.values():
+                if isinstance(_v, list) and _v:
+                    _field_hint = f"\nActual fields in data[0]: {list(_v[0].keys())}"
+                    break
+    except Exception:
+        pass
     retry_msg = (
         f"Category: {category}\n"
         f"Question: {prompt}\n\n"
         f"CRM Data:\n{ctx}\n\n"
-        f"{error_hint}\n\n"
+        f"{error_hint}{_field_hint}\n\n"
         f"Previous code that failed:\n```python\n{code}\n```\n\n"
         "Fix the code to produce the correct answer:\n"
-        "- Inspect data format: try JSON parse first, then CSV, then string search\n"
+        "- Use the ACTUAL field names listed above (not assumed names)\n"
+        "- Use _safe_date(d) for ALL date parsing (handles timezones, multiple formats)\n"
         "- Handle missing/null field values gracefully (skip None records)\n"
         "- CRITICAL: The LAST print() call must be ONLY the answer (no debug prints after answer)\n"
         "- If no matching data found, last print must be exactly: None"
