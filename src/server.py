@@ -1219,11 +1219,15 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     )
     try:
         client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        resp = await client.messages.create(
-            model=code_model,  # DAAO-selected (Haiku for simple, Sonnet for complex)
-            max_tokens=1500,
-            system=_CODE_EXEC_SYSTEM,
-            messages=[{"role": "user", "content": user_msg}],
+        # 20s LLM timeout: with 2 LLM calls (20s each) + 2 sandbox runs (8s each) = 56s < 60s limit
+        resp = await asyncio.wait_for(
+            client.messages.create(
+                model=code_model,
+                max_tokens=1500,
+                system=_CODE_EXEC_SYSTEM,
+                messages=[{"role": "user", "content": user_msg}],
+            ),
+            timeout=20.0,
         )
         raw = resp.content[0].text
     except Exception as exc:
@@ -1265,11 +1269,14 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         "- If no matching data found, last print must be exactly: None"
     )
     try:
-        resp2 = await client.messages.create(
-            model=code_model,
-            max_tokens=1200,
-            system=_CODE_EXEC_SYSTEM,
-            messages=[{"role": "user", "content": retry_msg}],
+        resp2 = await asyncio.wait_for(
+            client.messages.create(
+                model=code_model,
+                max_tokens=1200,
+                system=_CODE_EXEC_SYSTEM,
+                messages=[{"role": "user", "content": retry_msg}],
+            ),
+            timeout=20.0,
         )
         code2 = _extract_code_block(resp2.content[0].text)
         if code2:
