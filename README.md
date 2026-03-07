@@ -118,8 +118,11 @@ Before each task, the top-3 most relevant past cases (by Jaccard keyword overlap
 | Benchmark | Score | Metric | Rank |
 |-----------|-------|--------|------|
 | **τ²-Bench (airline domain)** | **3/3** | **100% pass rate** | **#1 globally** |
+| **CRMArenaPro** | **Run 5 in progress** | 2140 tasks, 21 CRM categories | TBD |
 
-Competitor (agentbeater baseline): 2/3 · 66.7%
+τ²-Bench competitor (agentbeater baseline): 2/3 · 66.7%
+
+CRMArenaPro Run 4 baseline: 443/2140 (20.7%, avg score 60.2). Run 5 adds code execution engine + Brain/Router.
 
 ---
 
@@ -210,9 +213,11 @@ docker run -e ANTHROPIC_API_KEY=sk-ant-... \
 ## Tech Stack
 
 - **Runtime:** Python 3.11 · FastAPI · uvicorn
-- **LLM:** Claude Haiku (classification, synthesis, audit) · Sonnet (COMPUTE, MUTATE)
+- **LLM:** claude-haiku-4-5-20251001 (classification, synthesis, audit) · claude-sonnet-4-6 (COMPUTE, MUTATE)
 - **FSM:** Custom 8-state engine · dynamic synthesis for novel process types
-- **Strategy:** UCB1 bandit over fsm / five_phase / moa
+- **Strategy:** UCB1 bandit over fsm / five_phase / moa (+ CRM Router via Brain)
+- **Core library:** [brainos-core-light](https://github.com/abhishec/brainoscorelight) — 5-layer Brain, zero-LLM Router, UCB1 strategy selection, RL primitives
+- **Brain layers:** WorkingMemory · EpisodicMemory · SemanticMemory (EMA) · StrategicMemory (UCB1) · MetaMemory
 - **Numerics:** `decimal.Decimal` in sandboxed tool execution
 - **RL:** UCB1 + case log + quality scoring + knowledge extraction + sequence graph (EMA)
 - **Protocol:** A2A JSON-RPC 2.0
