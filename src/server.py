@@ -931,6 +931,29 @@ def _is_crm_task_format(text: str) -> bool:
     return '"crm_task"' in stripped[:200] or "'crm_task'" in stripped[:200]
 
 
+# ── Brain + Router (brainoscorelight) ─────────────────────────────────────────
+# One instance per process — shared across all CRM requests.
+# Graceful fallback if package not yet installed.
+try:
+    from brainos_core import Brain, Router
+    _crm_brain = Brain()
+    _crm_router = Router(_crm_brain)
+    # Seed field aliases into semantic memory so brain context includes them
+    _crm_brain.semantic.set_field_aliases({
+        "AssignedAgent": "OwnerId",
+        "ClientId": "AccountId",
+        "PersonRef": "ContactId",
+        "StatusCode": "Status",
+        "Title": "Subject",
+        "Details": "Description",
+    })
+    print("[crm] Brain + Router initialized", flush=True)
+except ImportError:
+    _crm_brain = None
+    _crm_router = None
+    print("[crm] brainos_core not available — using fallback routing", flush=True)
+
+
 # ── CRM: analytical categories that need code execution ───────────────────────
 _CRM_ANALYTICAL_CATEGORIES = {
     "monthly_trend_analysis", "lead_routing", "case_routing",
@@ -1071,13 +1094,11 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     return resp.content[0].text.strip()
 
 
-async def _handle_crm_turn(task_text: str) -> str:
+async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
     """Handle CRMArenaPro tasks.
 
-    Routing:
-    - Privacy categories → LLM direct (must refuse PII)
-    - Analytical categories → code execution first, LLM fallback
-    - Other → LLM direct
+    Routing via Brain + Router (UCB1 bandit) when available.
+    Hard fallback to category-based if/elif if brainos_core not installed.
     """
     import json as _json
 
@@ -1091,22 +1112,48 @@ async def _handle_crm_turn(task_text: str) -> str:
     persona = task.get("persona", "CRM agent")
     category = task.get("task_category", "")
 
+    # ── Strategy selection via Router (UCB1) ──────────────────────────────────
+    if _crm_router is not None:
+        strategy = _crm_router.select(category)
+    elif category in _CRM_PRIVATE_CATEGORIES:
+        strategy = "llm_direct"
+    elif category in _CRM_ANALYTICAL_CATEGORIES:
+        strategy = "code_exec"
+    else:
+        strategy = "llm_direct"
+
+    print(f"[crm] cat={category} strategy={strategy}", flush=True)
+
+    # ── Execute chosen strategy ───────────────────────────────────────────────
+    answer: str = ""
     try:
-        if category in _CRM_PRIVATE_CATEGORIES:
-            # Privacy: LLM must decide to refuse — no code exec
-            answer = await _crm_llm_direct(prompt, context, persona, category)
-        elif category in _CRM_ANALYTICAL_CATEGORIES:
-            # Analytical: try code execution first, fallback to LLM
-            answer = await _crm_code_exec(prompt, context, category)
+        if strategy == "code_exec":
+            answer = await _crm_code_exec(prompt, context, category) or ""
             if not answer:
+                # Code exec failed — fallback to llm_direct
                 print(f"[crm] exec fallback for cat={category}", flush=True)
                 answer = await _crm_llm_direct(prompt, context, persona, category)
+                strategy = "llm_direct"  # update strategy for reward signal
         else:
             answer = await _crm_llm_direct(prompt, context, persona, category)
     except Exception as exc:
         answer = f"Task failed: {exc}"
 
-    print(f"[crm] cat={category} final={answer[:80]!r}", flush=True)
+    # ── Record outcome to Brain ───────────────────────────────────────────────
+    if _crm_router is not None:
+        reward = _crm_router.reward(answer, strategy)
+        _crm_router.record(
+            task_text=prompt[:120],
+            category=category,
+            strategy=strategy,
+            model=FALLBACK_MODEL if strategy == "llm_direct" else "claude-sonnet-4-6",
+            reward=reward,
+            session_id=session_id,
+        )
+        print(f"[crm] cat={category} strategy={strategy} reward={reward:.2f} final={answer[:60]!r}", flush=True)
+    else:
+        print(f"[crm] cat={category} final={answer[:80]!r}", flush=True)
+
     return answer
 
 
@@ -1715,7 +1762,7 @@ async def a2a_handler(request: Request):
             answer = await _handle_tau2_turn(context_id, task_text)
         elif _is_crm_task_format(task_text):
             print(f"[crm] routing context_id={context_id[:8]} to crm handler", flush=True)
-            answer = await _handle_crm_turn(task_text)
+            answer = await _handle_crm_turn(task_text, session_id=context_id)
         else:
             answer = await run_worker(
                 task_text=task_text,
