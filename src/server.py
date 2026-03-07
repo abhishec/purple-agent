@@ -1146,10 +1146,17 @@ async def _run_python_sandbox(code: str, timeout: int = 8) -> tuple[str | None, 
             lines = [l.strip() for l in stdout.splitlines() if l.strip()]
             result = lines[-1] if lines else None
             if result:
-                # Normalize "3.0" / "3.00" / "3.000" → "3": CRM counts/totals never need trailing zeros
+                # Normalize numeric trailing zeros: "3.0"→"3", "25.50"→"25.5"
                 import re as _re_sandbox
-                if _re_sandbox.match(r'^-?\d+\.0+$', result):
-                    result = str(int(float(result)))
+                if _re_sandbox.match(r'^-?\d+\.\d*$', result):
+                    try:
+                        fval = float(result)
+                        if fval == int(fval):
+                            result = str(int(fval))   # "3.0"/"3.00" → "3"
+                        else:
+                            result = str(fval)         # "25.50" → "25.5"
+                    except (ValueError, OverflowError):
+                        pass  # leave result unchanged if conversion fails
             return result, None
         if stderr:
             # Non-zero exit or error: pass stderr to retry as an error hint
