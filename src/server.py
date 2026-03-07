@@ -1457,7 +1457,9 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
         # Strip leading prefixes
         stripped = _re_pp.sub(
             r'^(?:the answer is|answer is|answer:|result:|the result is|the value is)\s*',
-            answer.strip(), flags=_re_pp.IGNORECASE
+            '',            # replacement: empty string
+            answer.strip(),  # string to operate on
+            flags=_re_pp.IGNORECASE,
         )
         # Strip trailing period if it looks like an added punctuation (not part of ID)
         stripped = stripped.rstrip('.')
