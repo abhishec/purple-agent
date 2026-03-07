@@ -1405,13 +1405,16 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         print(f"[crm-exec] cat={category} exec→{result[:60]!r}", flush=True)
         return result
 
-    # Retry: provide error + previous code + actual field names to fix specifically
+    # Retry: provide error + previous code + actual field names + targeted fix hints
     error_hint = f"Error from previous attempt: {exec_error}" if exec_error else "Previous code produced no output"
     # Extract actual field names from the JSON data to help fix KeyError failures
     _field_hint = ""
     try:
-        import json as _j
-        _ctx_data = _j.loads(ctx)
+        import json as _j, ast as _ast
+        try:
+            _ctx_data = _j.loads(ctx)
+        except Exception:
+            _ctx_data = _ast.literal_eval(ctx)
         if isinstance(_ctx_data, list) and _ctx_data:
             _field_hint = f"\nActual fields in data[0]: {list(_ctx_data[0].keys())}"
         elif isinstance(_ctx_data, dict):
@@ -1421,18 +1424,40 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
                     break
     except Exception:
         pass
+
+    # Targeted fix hints based on error type
+    _fix_hints = [
+        "- CRITICAL: The LAST print() call must be ONLY the answer (no debug prints after answer)",
+        "- If no matching data found, last print must be exactly: None",
+    ]
+    if exec_error:
+        err_lower = exec_error.lower()
+        if "keyerror" in err_lower:
+            _fix_hints.insert(0, "- KeyError: use the ACTUAL field names shown above, not assumed names")
+            _fix_hints.insert(1, "- Try record.get('FieldName') instead of record['FieldName'] to handle missing keys")
+        elif "typeerror" in err_lower or "nonetype" in err_lower:
+            _fix_hints.insert(0, "- TypeError/NoneType: skip records where the field value is None or empty")
+            _fix_hints.insert(1, "- Add: if record.get('Field') is None: continue")
+        elif "valueerror" in err_lower and "strptime" in err_lower:
+            _fix_hints.insert(0, "- Date parse error: use _safe_date(d) instead of strptime — handles all formats")
+        elif "json" in err_lower and "decode" in err_lower:
+            _fix_hints.insert(0, "- JSON parse failed: use the full parse cascade (json → ast.literal_eval → csv)")
+        elif "indexerror" in err_lower:
+            _fix_hints.insert(0, "- IndexError: check list is not empty before indexing (use data[0] only if data)")
+        elif "attributeerror" in err_lower:
+            _fix_hints.insert(0, "- AttributeError: check object types before calling methods")
+        elif "no output" in err_lower:
+            _fix_hints.insert(0, "- No output: ensure the last line is a print() statement with the answer")
+            _fix_hints.insert(1, "- If result is 0 (zero count): print(0) — zero is a valid answer")
+
     retry_msg = (
         f"Category: {category}\n"
         f"Question: {prompt}\n\n"
         f"CRM Data:\n{ctx}\n\n"
         f"{error_hint}{_field_hint}\n\n"
         f"Previous code that failed:\n```python\n{code}\n```\n\n"
-        "Fix the code to produce the correct answer:\n"
-        "- Use the ACTUAL field names listed above (not assumed names)\n"
-        "- Use _safe_date(d) for ALL date parsing (handles timezones, multiple formats)\n"
-        "- Handle missing/null field values gracefully (skip None records)\n"
-        "- CRITICAL: The LAST print() call must be ONLY the answer (no debug prints after answer)\n"
-        "- If no matching data found, last print must be exactly: None"
+        "Fix the code:\n"
+        + "\n".join(_fix_hints)
     )
     try:
         resp2 = await asyncio.wait_for(
