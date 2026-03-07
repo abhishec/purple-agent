@@ -1163,15 +1163,16 @@ Always wrap code in ```python\\n...\\n``` fences."""
 
 
 async def _crm_code_exec(prompt: str, context: str, category: str, model: str | None = None) -> str | None:
-    """Two-stage: generate Python code via DAAO-selected model, execute, return answer.
+    """Two-stage: generate Python code via Sonnet, execute, return answer.
 
-    Uses DAAO model selection directly: Haiku for simple lookups (fast, cheap),
-    Sonnet for complex aggregations (higher accuracy). Falls back to FALLBACK_MODEL.
+    Always uses FALLBACK_MODEL (Sonnet) for code generation even if DAAO
+    suggested Haiku. Analytics code execution requires complex Python:
+    date filtering, aggregation, routing logic — Haiku fails on these.
     Returns None if code generation or execution fails so caller can fallback.
     """
     import anthropic as _anthropic
-    # Trust DAAO routing: Haiku for simple lookups, Sonnet for complex analytics
-    code_model = model or FALLBACK_MODEL
+    # code_exec always uses Sonnet — analytics are never simple enough for Haiku
+    code_model = FALLBACK_MODEL
 
     # Smart context truncation: keep full data if fits, else trim records but keep structure
     # Sonnet has 200k token window — allow up to 30k chars of context
