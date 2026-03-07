@@ -935,9 +935,13 @@ def _is_crm_task_format(text: str) -> bool:
 # One instance per process — shared across all CRM requests.
 # Graceful fallback if package not yet installed.
 try:
-    from brainos_core import Brain, Router
+    from brainos_core import Brain, Router, DAAO
     _crm_brain = Brain()
     _crm_router = Router(_crm_brain)
+    _crm_daao = DAAO(
+        fast_model=FALLBACK_MODEL,
+        main_model="claude-sonnet-4-6",
+    )
     # Seed field aliases into semantic memory so brain context includes them
     _crm_brain.semantic.set_field_aliases({
         "AssignedAgent": "OwnerId",
@@ -947,10 +951,11 @@ try:
         "Title": "Subject",
         "Details": "Description",
     })
-    print("[crm] Brain + Router initialized", flush=True)
+    print("[crm] Brain + Router + DAAO initialized", flush=True)
 except ImportError:
     _crm_brain = None
     _crm_router = None
+    _crm_daao = None
     print("[crm] brainos_core not available — using fallback routing", flush=True)
 
 
@@ -1014,12 +1019,17 @@ def _run_python_sandbox(code: str, timeout: int = 8) -> str | None:
         return None
 
 
-async def _crm_code_exec(prompt: str, context: str, category: str) -> str | None:
-    """Two-stage: generate Python code via Sonnet, execute, return answer.
+async def _crm_code_exec(prompt: str, context: str, category: str, model: str | None = None) -> str | None:
+    """Two-stage: generate Python code via DAAO-selected model, execute, return answer.
 
+    Args:
+        model: DAAO-selected model. Code generation always uses at least Sonnet
+               (analytical tasks need reliable code — override to sonnet if fast model given).
     Returns None if code generation or execution fails so caller can fallback.
     """
     import anthropic as _anthropic
+    # Code generation always needs Sonnet for reliable output even if DAAO said Haiku
+    code_model = "claude-sonnet-4-6" if (model is None or "haiku" in (model or "").lower()) else model
     code_system = (
         "You are a Python expert solving CRM analytics questions.\n"
         "Write Python code that:\n"
@@ -1043,7 +1053,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str) -> str | None
     try:
         client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         resp = await client.messages.create(
-            model="claude-sonnet-4-6",  # Sonnet for reliable code generation
+            model=code_model,  # DAAO-selected (forced to Sonnet+ for code gen)
             max_tokens=1024,
             system=code_system,
             messages=[{"role": "user", "content": user_msg}],
@@ -1064,11 +1074,19 @@ async def _crm_code_exec(prompt: str, context: str, category: str) -> str | None
     return result
 
 
-async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str) -> str:
-    """Direct LLM answer — used for privacy categories and as fallback."""
+async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str, model: str | None = None) -> str:
+    """Direct LLM answer — used for privacy categories and as fallback.
+
+    Args:
+        model: DAAO-selected model. Privacy refusals always use fast model.
+               Lookup answers use the DAAO-selected model (Haiku or Sonnet).
+    """
     import anthropic as _anthropic
 
     is_private = category in _CRM_PRIVATE_CATEGORIES
+    # Privacy refusals are short and cheap — always use fast model
+    resolved_model = FALLBACK_MODEL if is_private else (model or FALLBACK_MODEL)
+
     system_prompt = (
         f"You are a {persona} working with CRM data.\n"
         "Answer using ONLY the provided CRM context.\n"
@@ -1086,7 +1104,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
 
     client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     resp = await client.messages.create(
-        model=FALLBACK_MODEL,
+        model=resolved_model,  # DAAO-selected model — not hardcoded
         max_tokens=128,
         system=system_prompt,
         messages=[{"role": "user", "content": user_msg}],
@@ -1112,7 +1130,13 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
     persona = task.get("persona", "CRM agent")
     category = task.get("task_category", "")
 
-    # ── Strategy selection via Router (UCB1) ──────────────────────────────────
+    # ── DAAO: select model BEFORE any LLM call (zero LLM cost) ──────────────
+    if _crm_daao is not None:
+        model = _crm_daao.route(task_text)
+    else:
+        model = FALLBACK_MODEL  # fallback if core not installed
+
+    # ── Strategy selection via Router (UCB1, zero LLM cost) ──────────────────
     if _crm_router is not None:
         strategy = _crm_router.select(category)
     elif category in _CRM_PRIVATE_CATEGORIES:
@@ -1122,37 +1146,37 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
     else:
         strategy = "llm_direct"
 
-    print(f"[crm] cat={category} strategy={strategy}", flush=True)
+    print(f"[crm] cat={category} strategy={strategy} model={model}", flush=True)
 
-    # ── Execute chosen strategy ───────────────────────────────────────────────
+    # ── Execute chosen strategy with DAAO-selected model ─────────────────────
     answer: str = ""
     try:
         if strategy == "code_exec":
-            answer = await _crm_code_exec(prompt, context, category) or ""
+            answer = await _crm_code_exec(prompt, context, category, model=model) or ""
             if not answer:
-                # Code exec failed — fallback to llm_direct
+                # Code exec failed — fallback to llm_direct with same DAAO model
                 print(f"[crm] exec fallback for cat={category}", flush=True)
-                answer = await _crm_llm_direct(prompt, context, persona, category)
+                answer = await _crm_llm_direct(prompt, context, persona, category, model=model)
                 strategy = "llm_direct"  # update strategy for reward signal
         else:
-            answer = await _crm_llm_direct(prompt, context, persona, category)
+            answer = await _crm_llm_direct(prompt, context, persona, category, model=model)
     except Exception as exc:
         answer = f"Task failed: {exc}"
 
-    # ── Record outcome to Brain ───────────────────────────────────────────────
+    # ── Record outcome to Brain (all 5 layers, zero LLM cost) ─────────────────
     if _crm_router is not None:
         reward = _crm_router.reward(answer, strategy)
         _crm_router.record(
             task_text=prompt[:120],
             category=category,
             strategy=strategy,
-            model=FALLBACK_MODEL if strategy == "llm_direct" else "claude-sonnet-4-6",
+            model=model,  # actual DAAO-selected model, not hardcoded
             reward=reward,
             session_id=session_id,
         )
-        print(f"[crm] cat={category} strategy={strategy} reward={reward:.2f} final={answer[:60]!r}", flush=True)
+        print(f"[crm] cat={category} strategy={strategy} model={model} reward={reward:.2f} final={answer[:60]!r}", flush=True)
     else:
-        print(f"[crm] cat={category} final={answer[:80]!r}", flush=True)
+        print(f"[crm] cat={category} model={model} final={answer[:80]!r}", flush=True)
 
     return answer
 
