@@ -1340,11 +1340,13 @@ _CRM_CATEGORY_HINTS = {
         "If cannot determine: return None."
     ),
     "sales_cycle_understanding": (
-        "Analyze sales cycle duration from CreatedDate to CloseDate (or first-contact to close). "
-        "Use _safe_date() for dates. timedelta = _safe_date(r['CloseDate']) - _safe_date(r['CreatedDate']). "
-        "Default output unit: days (td.days). If question says hours: td.total_seconds()/3600. "
-        "For average: round(statistics.mean([td.days for ...]), 1). int() if whole number. "
-        "Skip records where CloseDate or CreatedDate is None."
+        "Analyze sales cycle duration from CreatedDate to close date. "
+        "Close date field alternatives: CloseDate, CompletedDate, SolvedDate, ResolutionDate, WonDate. "
+        "Use .get(): start = _safe_date(r.get('CreatedDate')); end = _safe_date(r.get('CloseDate') or r.get('CompletedDate') or r.get('SolvedDate')). "
+        "Skip records where start or end is None. "
+        "durations = [(end - start).days for r in data for start,end in [(_safe_date(r.get('CreatedDate')), _safe_date(r.get('CloseDate') or r.get('CompletedDate')))] if start and end]. "
+        "Default output unit: days. If question says hours: use total_seconds()/3600. "
+        "Average: round(statistics.mean(durations), 1) if durations else print(None). int() if whole number."
     ),
     "sales_insight_mining": (
         "Identify (1) what to GROUP BY from the question, (2) what metric to aggregate. "
