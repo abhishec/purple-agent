@@ -1485,7 +1485,11 @@ _CRM_CATEGORY_HINTS = {
         "  s=_safe_date(r.get('CreatedDate')); e=_safe_date(r.get('CloseDate') or r.get('CompletedDate') or r.get('SolvedDate') or r.get('WonDate')). "
         "  if s and e: durations.append((e-s).total_seconds()/86400).  # raw days (float) "
         "avg_days = statistics.mean(durations) if durations else None. "
-        "final = (avg_days*24 if avg_days is not None else None) if 'hour' in _q else ((avg_days/7 if avg_days is not None else None) if 'week' in _q else avg_days). "
+        "if 'hour' in _q: final = avg_days*24 if avg_days is not None else None. "
+        "elif 'week' in _q: final = avg_days/7 if avg_days is not None else None. "
+        "elif 'month' in _q: final = avg_days/30 if avg_days is not None else None. "
+        "elif 'year' in _q and 'yearly' not in _q: final = avg_days/365 if avg_days is not None else None. "
+        "else: final = avg_days.  # default: days "
         "print(int(final) if final is not None and final % 1 == 0 else round(final, 2) if final is not None else None)."
     ),
     "sales_insight_mining": (
