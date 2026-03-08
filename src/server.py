@@ -1272,8 +1272,10 @@ _CRM_CATEGORY_HINTS = {
         "Group by region/state field, sum/count, find max."
     ),
     "lead_qualification": (
-        "Identify qualified leads. "
-        "Check LeadScore, Status, or qualification criteria fields."
+        "Data is for ONE specific lead (entity-specific task). "
+        "Read the relevant field directly from data[0]. No filtering needed. "
+        "Example: print(data[0].get('LeadSource') or data[0].get('Rating') or data[0].get('Status')). "
+        "Return the exact field value. If genuinely not found: print(None)."
     ),
     "activity_priority": (
         "Find tasks matching the criteria (often Status='Not Started' + some constraint). "
@@ -1281,8 +1283,10 @@ _CRM_CATEGORY_HINTS = {
         "Use record.get('Id') for each match. If none match: print(None)."
     ),
     "wrong_stage_rectification": (
-        "Identify tasks in wrong stage. Print ALL matching task IDs as a list: print([id1, id2, ...]). "
-        "Compare task stage against expected. If none: print(None)."
+        "Data is for ONE specific opportunity (entity-specific task). "
+        "Check if the stage is correct per the rules in the question. "
+        "Read data[0] fields — no iteration needed. "
+        "Answer: the correct stage name, the current stage, or None if cannot determine."
     ),
     "sales_cycle_understanding": (
         "Analyze time between sales stages. "
@@ -1297,20 +1301,23 @@ _CRM_CATEGORY_HINTS = {
         "Use Counter on category/type field; find most_common(1)[0]."
     ),
     "named_entity_disambiguation": (
-        "Identify which specific entity matches the criteria when duplicates exist. "
-        "Filter by ID, date, or related object to disambiguate."
+        "Data has records for a specific contact/entity. "
+        "Identify the correct entity by matching ID, date, or related-object fields. "
+        "Return the exact ID or name that matches the criteria. print(None) if no match."
     ),
     "invalid_config": (
-        "Find configs with invalid/missing values. Print ALL invalid record IDs as a list: print([id1, id2, ...]). "
-        "Check for None, empty, out-of-range, or rule-violating values. If none: print(None)."
+        "Data is for ONE specific quote (entity-specific task). "
+        "Check data[0] for invalid/missing values per the question criteria. "
+        "Return the specific invalid field name, value, or None if all valid."
     ),
     "internal_operation_data": (
         "Find operations matching the criteria. Print ALL matching IDs as a list, or print(None) if none match. "
         "Look for SLA violations, escalations, status mismatches."
     ),
     "quote_approval": (
-        "Find quotes needing approval. "
-        "Check ApprovalStatus, Amount vs threshold, or workflow stage."
+        "Data is for ONE specific quote (entity-specific task). "
+        "Check data[0] approval status, amount, or workflow stage per the question. "
+        "Return Yes/No or the relevant field value. print(None) if cannot determine."
     ),
 }
 
