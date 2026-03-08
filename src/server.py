@@ -1240,7 +1240,7 @@ PersonRef=ContactId, StatusCode=Status, Title=Subject, Details=Description.
 Date handling:
 - ALWAYS use _safe_date(d) instead of manual strptime — it handles all formats and timezones
 - "Today's date: YYYY-MM-DD" or "Current date: YYYY-MM-DD" may appear in context_data
-- Extract today: m = re.search(r"(?:today|current)['\"]?s? date[:\s]+(\d{4}-\d{2}-\d{2})", context_data, re.I); today = _safe_date(m.group(1)) if m else dt.now()
+- Extract today: m = re.search(r"(?:today|current).{0,30}(\d{4}-\d{2}-\d{2})", (context_data or '') + ' ' + (prompt_text or ''), re.I); today = _safe_date(m.group(1)) if m else dt.now()
 - Filter dates: [r for r in data if _safe_date(r.get('CreatedDate')) and _safe_date(r.get('CreatedDate')) >= cutoff]
 - "last N months": cutoff = today - timedelta(days=N*30)
 - "last N quarters": cutoff = today - timedelta(days=N*90)
@@ -1331,7 +1331,7 @@ _CRM_CATEGORY_HINTS = {
     "transfer_count": (
         "Count case transfers. Priority order: "
         "1. Pre-computed field: _tf = next((f for f in ['TransferCount','transfer_count','NumberOfTransfers','TransferredCount'] if data and data[0].get(f) is not None), None). "
-        "   If found: print(int(float(str(data[0].get(_tf))))). NOTE: 0 is valid, 'is not None' check. "
+        "   If found: _tv = data[0].get(_tf); print(int(float(str(_tv)))) if _tv not in (None,'','N/A','n/a') else print(0). NOTE: 0 is valid. "
         "2. Transfer event rows: if each row = a separate transfer event (has TransferDate/FromAgent/ToAgent), print(len(data)). "
         "3. Status-based: count = sum(1 for r in data if 'transfer' in str(r.get('Status','')+r.get('PreviousStatus','')).lower()); print(count). "
         "4. Queue-change based: queues=[r.get('Queue') or r.get('AssignedQueue') for r in data]; "
@@ -1342,7 +1342,7 @@ _CRM_CATEGORY_HINTS = {
         "Aggregate the amount field specified or implied in the question. "
         "_af = next((f for f in ['Amount','TotalAmount','Revenue','ARR','MRR','SalesAmount','DealValue','Price','Value'] if data and data[0].get(f) is not None), 'Amount'). "
         "If question specifies a date period: define today+cutoff first: "
-        "  _td=re.search(r'(?:today|current).{0,30}(\\d{4}-\\d{2}-\\d{2})', context_data or '', re.I); today=_safe_date(_td.group(1)) if _td else dt.now(). "
+        "  _td=re.search(r'(?:today|current).{0,30}(\\d{4}-\\d{2}-\\d{2})', (context_data or '')+(prompt_text or ''), re.I); today=_safe_date(_td.group(1)) if _td else dt.now(). "
         "  cutoff = today - timedelta(days=90)  # 'last 3 months' example; adjust to question. "
         "Filter records per the question (choose ONE, adapt as needed): "
         "  filtered = [r for r in data if r.get('StageName') == 'Closed Won']  # stage filter. "
@@ -1422,7 +1422,7 @@ _CRM_CATEGORY_HINTS = {
     "activity_priority": (
         "Find ALL tasks matching ALL criteria in the question. "
         "Task ID field: Id (primary), fallback to TaskId or ActivityId. "
-        "Always define today: _td=re.search(r'(?:today|current).{0,30}(\\d{4}-\\d{2}-\\d{2})', context_data or '', re.I); today=_safe_date(_td.group(1)) if _td else dt.now(). "
+        "Always define today: _td=re.search(r'(?:today|current).{0,30}(\\d{4}-\\d{2}-\\d{2})', (context_data or '')+(prompt_text or ''), re.I); today=_safe_date(_td.group(1)) if _td else dt.now(). "
         "Filter condition examples (use AND for multiple — pick from question): "
         "  filtered = [r for r in data if r.get('Status') == 'Not Started' and r.get('Priority') == 'High']  # status+priority. "
         "  filtered = [r for r in data if _safe_date(r.get('ActivityDate') or r.get('DueDate')) and _safe_date(r.get('ActivityDate') or r.get('DueDate')) <= today]  # due today. "
@@ -1476,12 +1476,16 @@ _CRM_CATEGORY_HINTS = {
         "Return EXACT entity name as in data. print(None) if no data or groups empty."
     ),
     "top_issue_identification": (
-        "Find the most frequent issue category/type across all cases. "
-        "Try fields in order: Type, Category, CaseType, IssueType, Subject, Reason, Priority. "
-        "Pick whichever field has the most non-None values: "
-        "_f = max(['Type','Category','CaseType','IssueType','Reason'], key=lambda f: sum(1 for r in data if r.get(f))). "
-        "c = Counter(r.get(_f) for r in data if r.get(_f)). "
-        "result = c.most_common(1); print(result[0][0] if result else None) — just the string, not the count."
+        "Find the most frequent issue category/type/reason across all cases. "
+        "Step 1 — pick the groupby field based on question keywords: "
+        "  question has 'reason'/'cause' → _f = next((f for f in ['Reason','CaseReason','Category'] if data and data[0].get(f)), None). "
+        "  question has 'type'/'case type' → _f = next((f for f in ['Type','CaseType','IssueType'] if data and data[0].get(f)), None). "
+        "  question has 'category' → _f = next((f for f in ['Category','CaseType','IssueType','Type'] if data and data[0].get(f)), None). "
+        "  question has 'subject' → _f = next((f for f in ['Subject','Title'] if data and data[0].get(f)), None). "
+        "  default (no keyword match) → _f = max(['Type','Category','CaseType','IssueType','Reason'], key=lambda f: sum(1 for r in data if r.get(f)), default='Type'). "
+        "Step 2 — count and return: "
+        "c = Counter(r.get(_f) for r in data if r.get(_f)) if _f else Counter(). "
+        "print(c.most_common(1)[0][0] if c else None)."
     ),
     "named_entity_disambiguation": (
         "The data has multiple records for entities with similar names. Identify the ONE that matches ALL criteria in the question. "
@@ -1818,6 +1822,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     full_code = (
         _SANDBOX_HEADER
         + f"context_data = {repr(ctx_sandbox)}\n"  # FULL data for sandbox — not sample
+        + f"prompt_text = {repr(prompt)}\n"  # question text — for date extraction regex
         + "data = _normalize_context(context_data)  # pre-parsed records list\n\n"
         + code
     )
@@ -1921,6 +1926,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
             full_code2 = (
                 _SANDBOX_HEADER
                 + f"context_data = {repr(ctx_sandbox)}\n"  # FULL data for retry sandbox
+                + f"prompt_text = {repr(prompt)}\n"  # question text — for date extraction regex
                 + "data = _normalize_context(context_data)  # pre-parsed records list\n\n"
                 + code2
             )
