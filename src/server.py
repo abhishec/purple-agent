@@ -1214,6 +1214,9 @@ _CODE_EXEC_SYSTEM = """You are a Python expert solving CRM analytics questions.
 
 `data` is a pre-parsed list of CRM records (dicts). It is already available — do NOT re-parse context_data unless you need raw text.
 `context_data` is the original raw string if you need date headers or text from it.
+`prompt_text` is the question string — use it to detect keywords and select the right computation mode.
+  Example: if 'rate' in prompt_text.lower() or '%' in prompt_text: ...  # rate/percentage mode
+  Example: if 'total' in prompt_text.lower() or 'sum' in prompt_text.lower(): ...  # sum mode
 
 These are pre-imported for you: json, re, io, csv, ast, datetime, math, statistics, itertools, Counter, defaultdict, itemgetter, dt (datetime.datetime alias), timedelta
 Use Counter for counting/frequency, defaultdict for groupby, itemgetter for sorting.
@@ -1349,19 +1352,19 @@ _CRM_CATEGORY_HINTS = {
         "  filtered = [r for r in data if _safe_date(r.get('CloseDate')) and _safe_date(r.get('CloseDate')) >= cutoff]  # date filter. "
         "  filtered = data  # no filter. "
         "vals = [float(r.get(_af)) for r in filtered if r.get(_af) is not None]. "
-        "# Read the question to pick output mode: "
-        "# 'total'/'sum'/'aggregate' question: total = sum(vals); print(int(total) if total % 1 == 0 else round(total, 2)) if vals else print(0). "
-        "# 'average'/'mean'/'avg' question:   avg = statistics.mean(vals); print(int(avg) if avg % 1 == 0 else round(avg, 2)) if vals else print(None). "
-        "# 'how many'/'count' question:        print(len(filtered))."
+        "_q = prompt_text.lower(). "
+        "if 'how many' in _q or 'count' in _q: print(len(filtered)). "
+        "elif 'average' in _q or 'mean' in _q or 'avg' in _q: avg=statistics.mean(vals) if vals else None; print(int(avg) if avg is not None and avg%1==0 else round(avg,2) if avg is not None else None). "
+        "else: total=sum(vals); print(int(total) if total%1==0 else round(total,2)) if vals else print(0)."
     ),
     "handle_time": (
         "Calculate handle time across cases. Use if/else structure: "
         "_ht_field = next((f for f in ['HandleTime','AverageHandleTime','AHT','AvgHandleTime','ResolutionTime','TalkTime','HoldTime'] if data and data[0].get(f) is not None), None). "
         "if _ht_field:  # pre-computed field path "
         "    vals = [float(r.get(_ht_field)) for r in data if r.get(_ht_field) is not None]. "
-        "    # 'total/sum' question: result = sum(vals) "
-        "    # 'average'/'avg'/'mean' or default: result = statistics.mean(vals) "
-        "    print(int(result) if vals and result % 1 == 0 else round(result, 2)) if vals else print(None). "
+        "    _q = prompt_text.lower(). "
+        "    result = sum(vals) if 'total' in _q or 'sum' in _q else (statistics.mean(vals) if vals else None). "
+        "    print(int(result) if result is not None and result % 1 == 0 else round(result, 2) if result is not None else None). "
         "else:  # compute from CreatedDate to closed date "
         "    durations = []. "
         "    for r in data: "
@@ -1369,7 +1372,8 @@ _CRM_CATEGORY_HINTS = {
         "      e = _safe_date(r.get('ClosedDate') or r.get('ResolvedDate') or r.get('SolvedDate') or r.get('CompletedDate')). "
         "      if s and e: durations.append((e-s).total_seconds()). "
         "    raw = statistics.mean(durations) if durations else None. "
-        "    # Pick divisor from question: 'minute'→60, 'hour'→3600, 'day'→86400, default→60 "
+        "    _q = prompt_text.lower(). "
+        "    divisor = 3600 if 'hour' in _q else (86400 if 'day' in _q else 60). "
         "    val = raw / divisor if raw is not None else None. "
         "    print(int(val) if val is not None and val % 1 == 0 else round(val, 2) if val is not None else None)."
     ),
@@ -1387,9 +1391,9 @@ _CRM_CATEGORY_HINTS = {
         "    if not converted: converted = [r for r in data if r.get('ConvertedDate')]. "
         "    if not converted: converted = [r for r in data if r.get('Status','') in ('Closed Won','Converted','Won','Qualified')]. "
         "    # Apply date/owner filters from question if any. "
-        "    # Read the question to pick output: "
-        "    # 'rate'/'percentage'/'%' question: rate = len(converted)/len(data)*100 if data else 0; print(round(rate, 2)). "
-        "    # 'count'/'how many' question:       print(len(converted))."
+        "    _q = prompt_text.lower(). "
+        "    if 'how many' in _q or 'count' in _q: print(len(converted)). "
+        "    else: rate = len(converted)/len(data)*100 if data else 0; print(round(rate, 2))."
     ),
     "best_region_identification": (
         "Find which region has the highest (or lowest, per the question) metric. "
@@ -1449,10 +1453,8 @@ _CRM_CATEGORY_HINTS = {
         "for r in data: s=_safe_date(r.get('CreatedDate')); e=_safe_date(r.get('CloseDate') or r.get('CompletedDate') or r.get('SolvedDate') or r.get('WonDate')); "
         "if s and e: durations.append((e-s).total_seconds()/86400).  # raw days (float) "
         "avg_days = statistics.mean(durations) if durations else None. "
-        "# Convert to question unit: "
-        "# 'hours' question:  final = avg_days * 24 if avg_days is not None else None. "
-        "# 'weeks' question:  final = avg_days / 7 if avg_days is not None else None. "
-        "# default (days):    final = avg_days. "
+        "_q = prompt_text.lower(). "
+        "final = (avg_days*24 if avg_days is not None else None) if 'hour' in _q else ((avg_days/7 if avg_days is not None else None) if 'week' in _q else avg_days). "
         "print(int(final) if final is not None and final % 1 == 0 else round(final, 2) if final is not None else None)."
     ),
     "sales_insight_mining": (
