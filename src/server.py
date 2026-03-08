@@ -2279,48 +2279,45 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                             _src = "task-ep" if tools_endpoint else "green-mcp"
                             print(f"[crm] fetched text-ctx cat={category} src={_src} len={len(context)}", flush=True)
                     else:
-                        if category == "knowledge_qa":
-                            # Keep original context if non-empty (may be knowledge base text)
-                            # Only clear it if the original was also empty/too-short
-                            if _text_original_ctx and len(_text_original_ctx.strip()) >= 10:
-                                print(f"[crm] knowledge_qa: no fetched ctx, using original KB text len={len(_text_original_ctx)}", flush=True)
-                                context = _text_original_ctx  # keep original knowledge text
-                            else:
-                                print(f"[crm] knowledge_qa: no ctx, using internal LLM knowledge", flush=True)
-                                context = ""  # use LLM knowledge
+                        # No fetched content — use original context if non-empty (Bug 048 fix)
+                        # Both knowledge_qa and policy_violation may have useful plain-text context
+                        # that _context_has_real_data() misclassified as empty (no JSON markers).
+                        if _text_original_ctx and len(_text_original_ctx.strip()) >= 10:
+                            print(f"[crm] {category}: no fetched ctx, using original text len={len(_text_original_ctx)}", flush=True)
+                            context = _text_original_ctx
+                        elif category == "knowledge_qa":
+                            print(f"[crm] knowledge_qa: no ctx, using internal LLM knowledge", flush=True)
+                            context = ""  # use LLM knowledge
                         else:
                             print(f"[crm] no-content task cat={category} → None", flush=True)
                             return "None"
                 except Exception as _fe:
-                    if category == "knowledge_qa":
-                        if _text_original_ctx and len(_text_original_ctx.strip()) >= 10:
-                            print(f"[crm] knowledge_qa: fetch error, using original KB text: {_fe}", flush=True)
-                            context = _text_original_ctx
-                        else:
-                            print(f"[crm] knowledge_qa fetch error, using internal LLM knowledge: {_fe}", flush=True)
-                            context = ""
+                    if _text_original_ctx and len(_text_original_ctx.strip()) >= 10:
+                        print(f"[crm] {category}: fetch error, using original text: {_fe}", flush=True)
+                        context = _text_original_ctx
+                    elif category == "knowledge_qa":
+                        print(f"[crm] knowledge_qa fetch error, using internal LLM knowledge: {_fe}", flush=True)
+                        context = ""
                     else:
                         print(f"[crm] text fetch error cat={category}: {_fe} → None", flush=True)
                         return "None"
             else:
-                if category == "knowledge_qa":
-                    if _text_original_ctx and len(_text_original_ctx.strip()) >= 10:
-                        print(f"[crm] knowledge_qa: no time for fetch, using original KB text", flush=True)
-                        context = _text_original_ctx
-                    else:
-                        print(f"[crm] knowledge_qa: no time for fetch, using internal LLM knowledge", flush=True)
-                        context = ""
+                if _text_original_ctx and len(_text_original_ctx.strip()) >= 10:
+                    print(f"[crm] {category}: no time for fetch, using original text", flush=True)
+                    context = _text_original_ctx
+                elif category == "knowledge_qa":
+                    print(f"[crm] knowledge_qa: no time for fetch, using internal LLM knowledge", flush=True)
+                    context = ""
                 else:
                     print(f"[crm] no-content task cat={category} → None (no time)", flush=True)
                     return "None"
         else:
-            if category == "knowledge_qa":
-                if _text_original_ctx and len(_text_original_ctx.strip()) >= 10:
-                    print(f"[crm] knowledge_qa: no endpoint, using original KB text", flush=True)
-                    context = _text_original_ctx
-                else:
-                    print(f"[crm] knowledge_qa: no endpoint, using internal LLM knowledge", flush=True)
-                    context = ""
+            if _text_original_ctx and len(_text_original_ctx.strip()) >= 10:
+                print(f"[crm] {category}: no endpoint, using original text", flush=True)
+                context = _text_original_ctx
+            elif category == "knowledge_qa":
+                print(f"[crm] knowledge_qa: no endpoint, using internal LLM knowledge", flush=True)
+                context = ""
             else:
                 print(f"[crm] no-content task cat={category} → None", flush=True)
                 return "None"
