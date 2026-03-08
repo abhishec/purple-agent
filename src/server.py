@@ -14,7 +14,7 @@ from src.dynamic_fsm import get_synthesis_stats
 from src.dynamic_tools import seed_amortization_tool, get_tool_registry_stats
 from src.strategy_bandit import get_stats as get_bandit_stats, ensure_warmed as bandit_warm
 from src.report_analyzer import analyze_and_save, load_intelligence
-from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL, FAST_MODEL
+from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL, FAST_MODEL, GREEN_AGENT_MCP_URL
 
 # ── Tau2-bench multi-turn session state ───────────────────────────────────────
 # The tau2 evaluator does NOT use MCP. Instead it embeds tool schemas as JSON
@@ -1748,52 +1748,58 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
 
     # ── Early None return: no real data → expected answer is "None" ──────────
     # ~20% of tasks in each category have empty context with expected_answer='None'.
-    # When context is empty and a tools_endpoint is available, try fetching via tools.
-    # Analytical: check for structured data (JSON/CSV/tables).
-    # Text QA: check for any meaningful content (knowledge articles can be plain text).
+    # When context is empty, try fetching CRM data via:
+    #   1. tools_endpoint (task-specific MCP endpoint from A2A metadata)
+    #   2. GREEN_AGENT_MCP_URL fallback (always-running CRM MCP server in the scenario)
+    # If fetch returns real data → continue to compute answer.
+    # If no data found → expected answer is "None" → return "None".
     if category in _CRM_ANALYTICAL_CATEGORIES and not _context_has_real_data(context):
-        if tools_endpoint and category not in _CRM_PRIVATE_CATEGORIES:
+        _fetch_ep = tools_endpoint or GREEN_AGENT_MCP_URL
+        if _fetch_ep and category not in _CRM_PRIVATE_CATEGORIES:
             _elapsed_pre = time.monotonic() - _task_start
             _tool_budget = max(55.0 - _elapsed_pre, 5.0)
             if _tool_budget > 5.0:
                 try:
                     fetched = await asyncio.wait_for(
-                        _crm_fetch_context_via_tools(tools_endpoint, prompt, category, session_id),
+                        _crm_fetch_context_via_tools(_fetch_ep, prompt, category, session_id),
                         timeout=min(_tool_budget - 2.0, 30.0),
                     )
                     if fetched and _context_has_real_data(fetched):
                         context = fetched
-                        print(f"[crm] tools-fetched context cat={category} len={len(context)}", flush=True)
+                        _src = "task-ep" if tools_endpoint else "green-mcp"
+                        print(f"[crm] fetched context cat={category} src={_src} len={len(context)}", flush=True)
                     else:
-                        print(f"[crm] tools returned no-data cat={category} → None", flush=True)
+                        print(f"[crm] fetch no-data cat={category} → None", flush=True)
                         return "None"
                 except Exception as _fe:
-                    print(f"[crm] tools fetch error cat={category}: {_fe} → None", flush=True)
+                    print(f"[crm] fetch error cat={category}: {_fe} → None", flush=True)
                     return "None"
             else:
-                print(f"[crm] no-data task cat={category} → None (no time for tools)", flush=True)
+                print(f"[crm] no-data task cat={category} → None (no time for fetch)", flush=True)
                 return "None"
         else:
             print(f"[crm] no-data task cat={category} → None", flush=True)
             return "None"
     if category in _CRM_TEXT_CATEGORIES and (not context or len(context.strip()) < 30):
-        if tools_endpoint:
+        _fetch_ep_text = tools_endpoint or GREEN_AGENT_MCP_URL
+        if _fetch_ep_text:
             _elapsed_pre = time.monotonic() - _task_start
             _tool_budget = max(55.0 - _elapsed_pre, 5.0)
             if _tool_budget > 5.0:
                 try:
                     fetched = await asyncio.wait_for(
-                        _crm_fetch_context_via_tools(tools_endpoint, prompt, category, session_id),
+                        _crm_fetch_context_via_tools(_fetch_ep_text, prompt, category, session_id),
                         timeout=min(_tool_budget - 2.0, 25.0),
                     )
                     if fetched and len(fetched.strip()) >= 30:
                         context = fetched
-                        print(f"[crm] tools-fetched text-ctx cat={category} len={len(context)}", flush=True)
+                        _src = "task-ep" if tools_endpoint else "green-mcp"
+                        print(f"[crm] fetched text-ctx cat={category} src={_src} len={len(context)}", flush=True)
                     else:
                         print(f"[crm] no-content task cat={category} → None", flush=True)
                         return "None"
                 except Exception as _fe:
-                    print(f"[crm] text-tools fetch error cat={category}: {_fe} → None", flush=True)
+                    print(f"[crm] text fetch error cat={category}: {_fe} → None", flush=True)
                     return "None"
             else:
                 print(f"[crm] no-content task cat={category} → None (no time)", flush=True)
@@ -1850,6 +1856,32 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
             and len(answer.strip()) < 20
             and answer.strip().lower().startswith("none")):
         answer = "None"
+
+    # ── Post-process: reject multi-sentence reasoning text as invalid answers ───
+    # If the answer is reasoning text (multiple sentences, contains "I need to", etc.)
+    # it means code_exec or llm_direct leaked internal reasoning. Reject → None.
+    # Valid CRM answers are: IDs, month names, numbers, state codes, short phrases, lists.
+    if answer and answer != "None" and category in _CRM_ANALYTICAL_CATEGORIES:
+        import re as _re_check
+        _a = answer.strip()
+        _is_reasoning = (
+            # Multi-line output that's not a list
+            ('\n' in _a and not (_a.startswith('[') and _a.endswith(']')))
+            # Starts with reasoning verbs
+            or bool(_re_check.match(
+                r'^(?:i (?:need|want|will|can|should|must|have)|'
+                r'let me|to find|then find|first|next|finally|'
+                r'##|the (?:following|steps?|process|approach)|'
+                r'based on (?:the )?(?:above|following))',
+                _a, _re_check.IGNORECASE))
+            # Contains colon with label (e.g. "Not Started Tasks count: 0")
+            or (': ' in _a and len(_a) > 30 and not _a.startswith('['))
+            # Very long reasoning-style text (> 120 chars without being a list)
+            or (len(_a) > 120 and not _a.startswith('[') and not _a.startswith('{'))
+        )
+        if _is_reasoning:
+            print(f"[crm] rejected reasoning text cat={category} ans={_a[:60]!r} → None", flush=True)
+            answer = "None"
 
     # ── Post-process: strip common LLM prefix noise from short answers ────────
     # e.g. "The answer is September." → "September"
