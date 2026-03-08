@@ -1525,15 +1525,18 @@ async def _crm_fetch_context_via_tools(
     return ""
 
 
-async def _crm_code_exec(prompt: str, context: str, category: str, model: str | None = None) -> str | None:
+async def _crm_code_exec(prompt: str, context: str, category: str, model: str | None = None, task_start: float = 0.0) -> str | None:
     """Two-stage: generate Python code via Sonnet, execute, return answer.
 
     Always uses FALLBACK_MODEL (Sonnet) for code generation even if DAAO
     suggested Haiku. Analytics code execution requires complex Python:
     date filtering, aggregation, routing logic — Haiku fails on these.
     Returns None if code generation or execution fails so caller can fallback.
+
+    task_start: monotonic timestamp from _handle_crm_turn to budget retry vs 60s deadline.
     """
     import anthropic as _anthropic
+    import time as _time_exec
     # code_exec always uses Sonnet — analytics are never simple enough for Haiku
     code_model = FALLBACK_MODEL
 
@@ -1672,6 +1675,14 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     if result:
         print(f"[crm-exec] cat={category} exec→{result[:60]!r}", flush=True)
         return result
+
+    # Time budget check: skip retry if we're too close to the 60s deadline
+    # Retry needs ~28s (20s LLM + 8s sandbox). If elapsed > 32s, skip retry.
+    if task_start > 0:
+        _elapsed_now = _time_exec.monotonic() - task_start
+        if _elapsed_now > 32.0:
+            print(f"[crm-exec] skip retry (elapsed={_elapsed_now:.1f}s > 32s budget) cat={category}", flush=True)
+            return None
 
     # Retry: provide error + previous code + actual field names + targeted fix hints
     error_hint = f"Error from previous attempt: {exec_error}" if exec_error else "Previous code produced no output"
@@ -2104,7 +2115,7 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
     answer: str = ""
     try:
         if strategy == "code_exec":
-            answer = await _crm_code_exec(prompt, context, category, model=model) or ""
+            answer = await _crm_code_exec(prompt, context, category, model=model, task_start=_task_start) or ""
             if not answer:
                 # Code exec failed — check if context actually had data
                 if not _context_has_real_data(context):
