@@ -1283,7 +1283,9 @@ _CRM_CATEGORY_HINTS = {
         "NEVER return a month number — always full name via strftime('%B'). "
         "Date field fallback chain: CreatedDate → CloseDate → Date → ActivityDate → TransactionDate → OrderDate. "
         "Choose mode from question: "
-        "  - Revenue/sales/amount questions → SUM mode: monthly[month] += float(r.get('Amount') or r.get('Revenue') or 0). "
+        "  - Revenue/sales/amount questions → SUM mode. Find the amount field: "
+        "    _af = next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','Value'] if data and data[0].get(f) is not None), 'Amount'). "
+        "    monthly[month] += (lambda v: float(v) if v is not None else 0)(r.get(_af)). "
         "  - Count/volume/most-records questions → COUNT mode: monthly[month] += 1. "
         "Pattern: monthly = defaultdict(float); "
         "for r in data: d = _safe_date(r.get('CreatedDate')) or _safe_date(r.get('CloseDate')) or _safe_date(r.get('Date')) or _safe_date(r.get('ActivityDate')); "
@@ -1361,10 +1363,15 @@ _CRM_CATEGORY_HINTS = {
     ),
     "best_region_identification": (
         "Find which region has the highest (or lowest, per the question) metric. "
-        "Try region field names: Region, State, Territory, BillingState, BillingCountry, "
+        "Region field aliases: Region, State, Territory, BillingState, BillingCountry, "
         "ShippingState, Country, Province, Area, Zone, Location, District. "
-        "Group by region (skip None/empty), aggregate metric (sum Amount or count records), "
-        "then max(grouped, key=grouped.get) or min() per the question. "
+        "_rf = next((f for f in ['Region','State','Territory','BillingState','BillingCountry','Country'] if data and data[0].get(f)), 'Region'). "
+        "Amount-based: _af = next((f for f in ['Amount','Revenue','TotalAmount','Value'] if data and data[0].get(f) is not None), 'Amount'). "
+        "grouped = defaultdict(float); "
+        "for r in data: k=r.get(_rf); v=r.get(_af); "
+        "if k: grouped[k] += float(v) if v is not None else 0. "
+        "Count-based: Counter(r.get(_rf) for r in data if r.get(_rf)).most_common(1)[0][0]. "
+        "print(max(grouped, key=grouped.get) if grouped else None) or min() per the question. "
         "Output: exact region string as it appears in data."
     ),
     "lead_qualification": (
@@ -1404,15 +1411,18 @@ _CRM_CATEGORY_HINTS = {
     ),
     "sales_insight_mining": (
         "Identify (1) what to GROUP BY from the question, (2) what metric to aggregate. "
-        "Use defaultdict to group then max/min: "
-        "groups = defaultdict(float) "
-        "→ for each record: groups[key_field] += float(amount_field or 0) "
-        "→ print(max(groups, key=groups.get)) or min() per question. "
-        "Agent/rep fields: AssignedTo, OwnerId, SalesRep, AgentName, OwnerName. "
+        "Amount-based (highest revenue/sales): "
+        "_af = next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','Value'] if data and data[0].get(f) is not None), 'Amount'). "
+        "groups = defaultdict(float); "
+        "for r in data: k=r.get(key_field); v=r.get(_af); "
+        "if k: groups[k] += float(v) if v is not None else 0. "
+        "print(max(groups, key=groups.get) if groups else None) or min() per question. "
+        "Count-based (most X, highest volume): "
+        "Counter(r.get('Field') for r in data if r.get('Field')).most_common(1)[0][0]. "
+        "Agent/rep fields: AssignedTo, OwnerId, SalesRep, AgentName, OwnerName, Owner. "
         "Product fields: ProductName, Product, Item, SKU, ProductFamily. "
-        "Region fields: Region, Territory, BillingState, State, Area. "
-        "For count-based (most X): use Counter(r.get('Field') for r in data if r.get('Field')).most_common(1)[0][0]. "
-        "Return EXACT entity name as in data. print(None) if no data."
+        "Region fields: Region, Territory, BillingState, State, Area, Country. "
+        "Return EXACT entity name as in data. print(None) if no data or groups empty."
     ),
     "top_issue_identification": (
         "Find the most frequent issue category/type across all cases. "
