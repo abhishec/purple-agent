@@ -1290,8 +1290,10 @@ _CRM_CATEGORY_HINTS = {
         "Round to 2 decimal places. Use int() if the result is a whole number."
     ),
     "conversion_rate_comprehension": (
-        "Calculate conversion rate: converted/total * 100. "
-        "Look for IsConverted, ConvertedDate, or Status='Closed Won' fields."
+        "If question asks for rate/percentage: rate = converted_count / total * 100, round to 2 decimal places. "
+        "If question asks for count: just count the converted records (use int()). "
+        "Identify converted records via IsConverted==True, ConvertedDate not null, or Status='Closed Won'. "
+        "Boolean fields may be bool OR string: check v in (True, 'true', 'True', 'Yes', '1', 1)."
     ),
     "best_region_identification": (
         "Find which region/state/territory has highest metric (sales, count, etc.). "
