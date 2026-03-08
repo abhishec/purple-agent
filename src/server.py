@@ -1179,11 +1179,8 @@ async def _run_python_sandbox(code: str, timeout: int = 8) -> tuple[str | None, 
 
 _CODE_EXEC_SYSTEM = """You are a Python expert solving CRM analytics questions.
 
-`context_data` is a pre-loaded string variable. Detect its format and parse it:
-- JSON array  → data = json.loads(context_data)      # list of dicts
-- JSON object → data = json.loads(context_data)      # single dict or nested
-- CSV text    → use csv.DictReader(io.StringIO(context_data)); collect rows with list(reader)
-- Mixed text  → parse with re or split()
+`data` is a pre-parsed list of CRM records (dicts). It is already available — do NOT re-parse context_data unless you need raw text.
+`context_data` is the original raw string if you need date headers or text from it.
 
 These are pre-imported for you: json, re, io, csv, ast, datetime, math, statistics, itertools, Counter, defaultdict, itemgetter, dt (datetime.datetime alias), timedelta
 Use Counter for counting/frequency, defaultdict for groupby, itemgetter for sorting.
@@ -1192,30 +1189,10 @@ Use _safe_date(d) for robust date parsing (handles ISO8601, timezones, YYYY-MM-D
 CRITICAL: Do NOT import pandas, numpy, scipy, or any third-party library — they are NOT installed.
 CRITICAL: Do NOT use import requests, urllib, or any network library.
 
-Robustness rules:
-- Parse data in this order (try each until one works):
-  1. JSON (double-quotes): try: data = json.loads(context_data)
-  2. JSON with leading text: find first [ or { with regex, use raw_decode to allow trailing text
-  3. Python literal (single-quotes): import ast; data=ast.literal_eval(context_data)
-  4. CSV: reader=csv.DictReader(io.StringIO(context_data)); data=list(reader)
-  5. Fallback: data=[]
-  Full robust parse (COPY THIS EXACTLY):
-    import ast as _ast
-    try: data = json.loads(context_data)
-    except:
-        try:
-            _m=re.search(r'[\[{]',context_data)
-            if _m: data,_=json.JSONDecoder().raw_decode(context_data,_m.start())
-            else: raise ValueError()
-        except:
-            try: data=_ast.literal_eval(context_data)
-            except:
-                try: data=list(csv.DictReader(io.StringIO(context_data)))
-                except: data=[]
-- If data is a dict (not list), find the list with the most records:
-  if isinstance(data, dict): lists = [(k,v) for k,v in data.items() if isinstance(v,list)]; data = max(lists, key=lambda x: len(x[1]))[1] if lists else [data]
-- After parsing, ensure data is a list: if not isinstance(data, list): data = [data]
-- Inspect first record's keys to find actual field names: keys = list(data[0].keys()) if data else []
+Using `data`:
+- `data` is already a list of dicts. Use it directly: for r in data: ...
+- Inspect field names: keys = list(data[0].keys()) if data else []
+- If data seems empty, you may re-parse: data = _normalize_context(context_data)
 - When accessing dict keys, try aliases: record.get('OwnerId') or record.get('AssignedAgent')
 - Check for None/null values before arithmetic: skip records where field is None or field == ''
 - Integer output: if result is a whole number, use int(result) to avoid '3.0' instead of '3'
@@ -1253,7 +1230,7 @@ CRITICAL output rules — violating these = wrong answer:
 - For "activity_priority", "wrong_stage_rectification", "invalid_config" categories: answer may be a list of IDs — print(['id1', 'id2', ...]) or print(None) if none match
 - Count questions with 0 results: print 0 (not None — zero is a valid count)
 - If data records are empty or question asks to find/identify something that doesn't exist: print exactly None
-- IMPORTANT: If context_data contains section headers (lines starting with ##) mixed with JSON records, find and use ONLY the JSON array portion. Do NOT print section headers or policy text.
+- IMPORTANT: `data` is pre-normalized. Do NOT print context_data or data directly — only print the computed answer.
 
 Always wrap code in ```python\\n...\\n``` fences."""
 
@@ -1481,10 +1458,37 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         "    # Last resort: try parsing just the date portion\n"
         "    try: return dt.strptime(s[:10], '%Y-%m-%d')\n"
         "    except: return None\n"
+        "def _normalize_context(raw):\n"
+        "    '''Pre-parse context: handles JSON array, JSON dict (extract largest list), CSV, mixed text.'''\n"
+        "    s = raw.strip() if raw else ''\n"
+        "    # Try JSON parse\n"
+        "    parsed = None\n"
+        "    try: parsed = json.loads(s)\n"
+        "    except:\n"
+        "        m = re.search(r'[\\[{]', s)\n"
+        "        if m:\n"
+        "            try: parsed, _ = json.JSONDecoder().raw_decode(s, m.start())\n"
+        "            except: pass\n"
+        "    if parsed is None:\n"
+        "        try: parsed = ast.literal_eval(s)\n"
+        "        except: pass\n"
+        "    if parsed is None:\n"
+        "        try: parsed = list(csv.DictReader(io.StringIO(s)))\n"
+        "        except: parsed = []\n"
+        "    # If dict: extract the longest list value as records\n"
+        "    if isinstance(parsed, dict):\n"
+        "        lists = [(k, v) for k, v in parsed.items() if isinstance(v, list)]\n"
+        "        if lists:\n"
+        "            parsed = max(lists, key=lambda x: len(x[1]))[1]\n"
+        "        else:\n"
+        "            parsed = [parsed]\n"
+        "    if not isinstance(parsed, list): parsed = [parsed] if parsed else []\n"
+        "    return parsed\n"
     )
     full_code = (
         _SANDBOX_HEADER
-        + f"context_data = {repr(ctx)}\n\n"
+        + f"context_data = {repr(ctx)}\n"
+        + "data = _normalize_context(context_data)  # pre-parsed records list\n\n"
         + code
     )
     result, exec_error = await _run_python_sandbox(full_code)
