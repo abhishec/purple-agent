@@ -2344,6 +2344,29 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
             print(f"[crm] strip-prefix cat={category} {answer[:40]!r}→{stripped!r}", flush=True)
             answer = stripped
 
+    # ── Post-process: strip trailing .0 from whole-number float answers ──────────
+    # Code exec often prints '3.0' instead of '3' (Python float arithmetic).
+    # Benchmark exact_match expects '3', not '3.0'.
+    # Only strip for analytical categories where numeric answers are common.
+    if (answer and answer != "None" and category in _CRM_ANALYTICAL_CATEGORIES
+            and not _is_list_answer):
+        import re as _re_num
+        _stripped_num = answer.strip()
+        # Match: optional minus, digits, decimal point, trailing zeros only
+        _num_m = _re_num.match(r'^(-?\d+)\.0+$', _stripped_num)
+        if _num_m:
+            _clean_int = _num_m.group(1)
+            print(f"[crm] strip-.0 cat={category} {_stripped_num!r}→{_clean_int!r}", flush=True)
+            answer = _clean_int
+        else:
+            # Also strip trailing zeros after decimal: "25.50" → "25.5", "3.10" → "3.1"
+            _num_m2 = _re_num.match(r'^(-?\d+\.\d*?)0+$', _stripped_num)
+            if _num_m2 and '.' in _num_m2.group(0):
+                _clean_dec = _num_m2.group(1).rstrip('.')
+                if _clean_dec != _stripped_num:
+                    print(f"[crm] strip-trail-zero cat={category} {_stripped_num!r}→{_clean_dec!r}", flush=True)
+                    answer = _clean_dec
+
     # ── Post-process: month number → full month name for monthly_trend_analysis ─
     # If code returned "3" (month number) instead of "March", convert it.
     # Only for the specific category where the answer is definitively a month.
