@@ -1271,18 +1271,28 @@ _CRM_CATEGORY_HINTS = {
         "print(max(monthly, key=monthly.get)) if monthly else print(None) — or min() if lowest."
     ),
     "lead_routing": (
-        "CRITICAL: The routing RULES come from the question text — parse them in Python as if/elif chains. "
-        "The DATA has the lead fields (LeadSource, Rating, Region, Product, Score, etc.). "
-        "Write Python that: (1) reads rule conditions from the question string (hardcode them as literals), "
-        "(2) reads lead fields from data[0] (or first matching record), (3) applies if/elif to find the team. "
-        "Return exact team/agent name string. print(None) if no rule matches."
+        "CRITICAL: The routing RULES come from the question text — implement them as if/elif in Python. "
+        "The DATA has the ONE lead record to route. "
+        "Lead field aliases: LeadSource, Rating, Region, Territory, Product, Score, Grade, Country, Status, Industry. "
+        "Pattern: "
+        "lead = data[0] if data else {}. "
+        "Hardcode the exact conditions from the question text: "
+        "if lead.get('LeadSource') == 'Web' and lead.get('Rating') == 'Hot': print('Inbound Team'). "
+        "elif lead.get('Score', 0) >= 70: print('Enterprise Team'). "
+        "else: print(None). "
+        "Return EXACT team/agent/queue name string as stated in the question rules."
     ),
     "case_routing": (
-        "CRITICAL: The routing RULES come from the question text — parse them in Python as if/elif chains. "
-        "The DATA has the case fields (Priority, Category, Type, Region, Product, Status, etc.). "
-        "Write Python that: (1) reads rule conditions from the question string (hardcode them as literals), "
-        "(2) reads case fields from data[0] (or first matching record), (3) applies if/elif to find the queue. "
-        "Return exact queue/agent name string. print(None) if no rule matches."
+        "CRITICAL: The routing RULES come from the question text — implement them as if/elif in Python. "
+        "The DATA has the ONE case record to route. "
+        "Case field aliases: Priority, Category, Type, Subject, Status, Region, Product, CaseType, IssueType, Origin. "
+        "Pattern: "
+        "case = data[0] if data else {}. "
+        "Hardcode the exact conditions from the question text: "
+        "if case.get('Priority') == 'High' and case.get('Type') == 'Technical': print('Tier 2 Support'). "
+        "elif case.get('Region') == 'EMEA': print('EMEA Queue'). "
+        "else: print(None). "
+        "Return EXACT team/queue/agent name string as stated in the question rules."
     ),
     "transfer_count": (
         "Count case transfers. "
@@ -1294,12 +1304,14 @@ _CRM_CATEGORY_HINTS = {
     ),
     "sales_amount_understanding": (
         "Aggregate the amount field specified or implied in the question. "
-        "Amount field aliases: Amount, TotalAmount, Revenue, ARR, MRR, SalesAmount, DealValue, Price. "
-        "Find which field has data: _af = next((f for f in ['Amount','TotalAmount','Revenue','ARR','SalesAmount'] if data and data[0].get(f) is not None), 'Amount'). "
+        "Amount field aliases: Amount, TotalAmount, Revenue, ARR, MRR, SalesAmount, DealValue, Price, Value. "
+        "_af = next((f for f in ['Amount','TotalAmount','Revenue','ARR','SalesAmount','DealValue','Price','Value'] if data and data[0].get(f) is not None), 'Amount'). "
         "Filter by StageName/Status (e.g., 'Closed Won'), date range, owner, or region per the question. "
-        "Skip None: vals = [float(r.get(_af)) for r in filtered if r.get(_af) is not None]. "
-        "Sum: total = sum(vals); print(int(total) if total == int(total) else round(total, 2)). "
-        "Average: round(statistics.mean(vals), 2) if vals else print(0 if count_question else None)."
+        "filtered = [r for r in data if <question_conditions>]. "
+        "vals = [float(r.get(_af)) for r in filtered if r.get(_af) is not None]. "
+        "Sum question: total = sum(vals); print(int(total) if total == int(total) else round(total, 2)) if vals else print(0). "
+        "Average question: print(round(statistics.mean(vals), 2)) if vals else print(None). "
+        "Count question ('how many'/'count'): print(len(filtered))."
     ),
     "handle_time": (
         "Calculate handle time across cases. "
@@ -1315,10 +1327,17 @@ _CRM_CATEGORY_HINTS = {
         "int() if whole number, round(x, 2) for decimals."
     ),
     "conversion_rate_comprehension": (
-        "If question asks for rate/percentage: rate = converted_count / total * 100, round to 2 decimal places. "
-        "If question asks for count: just count the converted records (use int()). "
-        "Identify converted records via IsConverted==True, ConvertedDate not null, or Status='Closed Won'. "
-        "Boolean fields may be bool OR string: check v in (True, 'true', 'True', 'Yes', '1', 1)."
+        "Calculate conversion rate or converted count. "
+        "def is_true(v): return v in (True,'true','True','Yes','yes','1',1). "
+        "Step 1 — find converted records: "
+        "  converted = [r for r in data if is_true(r.get('IsConverted'))]. "
+        "  If empty: converted = [r for r in data if r.get('ConvertedDate')]. "
+        "  If still empty: converted = [r for r in data if r.get('Status','') in ('Closed Won','Converted','Won','Qualified')]. "
+        "Step 2 — apply date/owner/region filters from question if any. "
+        "Step 3: "
+        "  Rate/percentage: rate = len(converted)/len(data)*100 if data else 0; print(round(rate, 2)). "
+        "  Count: print(len(converted)). "
+        "  If data has pre-computed rate field (ConversionRate, Rate, conversion_rate): use it directly."
     ),
     "best_region_identification": (
         "Find which region has the highest (or lowest, per the question) metric. "
@@ -1336,11 +1355,14 @@ _CRM_CATEGORY_HINTS = {
         "If the field is missing or answer genuinely unknown: return None."
     ),
     "activity_priority": (
-        "Find tasks matching ALL criteria in the question (e.g., Status='Not Started', Priority, DueDate, Owner). "
-        "CRITICAL: Print ALL matching task IDs as a Python list: print([r.get('Id') for r in data if <conditions>]). "
-        "If the list is empty: print(None). Never print an empty list []. "
-        "For due date conditions: use _safe_date() for comparison. "
-        "Sort by priority/due date if question asks for ordered list."
+        "Find ALL tasks matching the criteria in the question. "
+        "Task ID field: Id (primary), fallback to TaskId or ActivityId. "
+        "Filter criteria: Status ('Not Started','In Progress','Open'), Priority ('High','Normal','Low'), "
+        "DueDate/ActivityDate range, OwnerId/AssignedTo/Owner. "
+        "For due date: compare _safe_date(r.get('ActivityDate') or r.get('DueDate')). "
+        "Pattern: matches = [r.get('Id') or r.get('TaskId') or r.get('ActivityId') for r in data if <all_conditions>]. "
+        "CRITICAL: if not matches: print(None). If matches: print(matches) as a Python list. "
+        "Sort by Priority then DueDate if question asks for prioritized order."
     ),
     "wrong_stage_rectification": (
         "This is ONE specific opportunity record. "
