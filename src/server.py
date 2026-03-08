@@ -1367,7 +1367,7 @@ _CRM_CATEGORY_HINTS = {
         "_q = prompt_text.lower(). "
         "Year pre-filter (Lesson S — always extract year and filter rows first): "
         "  _yr_m_ht=re.search(r'\\b(20\\d{2})\\b', prompt_text); _yr_ht=int(_yr_m_ht.group(1)) if _yr_m_ht else None. "
-        "  _df_ht = lambda r: _safe_date(r.get('CreatedDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('ActivityDate')). "
+        "  _df_ht = lambda r: _safe_date(r.get('ClosedDate') or r.get('ResolvedDate') or r.get('SolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')). "
         "  rows = [r for r in data if _df_ht(r) and _df_ht(r).year==_yr_ht] if _yr_ht else list(data). "
         "_ht_field = next((f for f in ['HandleTime','AverageHandleTime','AHT','AvgHandleTime','ResolutionTime','TalkTime','HoldTime'] if data and data[0].get(f) is not None), None). "
         "if _ht_field:  # pre-computed field path "
