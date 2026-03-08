@@ -1245,7 +1245,7 @@ CRITICAL output rules — violating these = wrong answer:
 - States: 2-letter code (e.g., CA) unless data has full name
 - Dates: as they appear in the data
 - If multiple matches: print the single best/highest/most answer UNLESS the question says "list all", "return all", "find all", "which tasks", "choose tasks" — in those cases print a Python list: print(['id1', 'id2'])
-- For "activity_priority", "wrong_stage_rectification", "invalid_config" categories: answer may be a list of IDs — print(['id1', 'id2', ...]) or print(None) if none match
+- For "activity_priority" category: answer is a list of task IDs — print([id1, id2, ...]) or print(None) if none match
 - Count questions with 0 results: print 0 (not None — zero is a valid count)
 - If data records are empty or question asks to find/identify something that doesn't exist: print exactly None
 - IMPORTANT: `data` is pre-normalized. Do NOT print context_data or data directly — only print the computed answer.
