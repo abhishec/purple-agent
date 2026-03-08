@@ -1345,9 +1345,9 @@ _CRM_CATEGORY_HINTS = {
     ),
     "top_issue_identification": (
         "Find the most frequent issue category/type across all cases. "
-        "Try fields in order: Type, Category, Subject, Priority, Reason. "
+        "Try fields in order: Type, Category, CaseType, IssueType, Subject, Priority, Reason. "
         "Use Counter: c = Counter(r.get('Type') for r in data if r.get('Type')). "
-        "print(c.most_common(1)[0][0]) — just the string value, not the count."
+        "result = c.most_common(1); print(result[0][0] if result else None) — just the string, not the count."
     ),
     "named_entity_disambiguation": (
         "The data has records for a specific contact/account/lead. "
