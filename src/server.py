@@ -1751,19 +1751,34 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     elif is_text_qa:
         # knowledge_qa, policy_violation_identification — reasoning over text, may need a phrase
         _ctx_available = context and len(context.strip()) >= 30
+        _is_policy = (category == "policy_violation_identification")
         if _ctx_available:
-            system_prompt = (
-                f"You are a {persona} — a CRM expert.\n"
-                "Use ONLY the provided context to answer. Do not invent information.\n"
-                "The context may contain CRM records, knowledge articles, policy documents, or product descriptions.\n"
-                "Search ALL of the provided content — including knowledge articles and product descriptions — for the answer.\n"
-                f"{_CRM_DRIFT_NOTE}\n\n"
-                "Answer concisely. For yes/no questions: answer Yes or No only.\n"
-                "For factual questions: give the exact term, name, or phrase from the data.\n"
-                "For policy questions: identify the specific violation or policy name.\n"
-                "If the context does not contain the answer, respond with exactly: None\n"
-                "No explanation, no prefix, no punctuation at the end. Just the answer."
-            )
+            if _is_policy:
+                # Policy: question contains the policy rules + fetched context has case data.
+                # Use BOTH: question text (rules) + context (case record fields).
+                system_prompt = (
+                    f"You are a {persona} — a CRM compliance expert.\n"
+                    "The question contains policy rules and the context contains the CRM case/record data.\n"
+                    "Apply the policy rules from the question to the data in the context to identify any violation.\n"
+                    f"{_CRM_DRIFT_NOTE}\n\n"
+                    "Answer with ONLY the exact policy name or violation type (e.g., 'SLA Breach', 'Escalation Policy').\n"
+                    "If the question is Yes/No: answer Yes or No only.\n"
+                    "If no violation exists or cannot be determined from the data: respond with exactly: None\n"
+                    "No explanation, no prefix. Just the answer value."
+                )
+            else:
+                # knowledge_qa: knowledge base text in context — use ONLY the context
+                system_prompt = (
+                    f"You are a {persona} — a CRM expert.\n"
+                    "Use ONLY the provided context to answer. Do not invent information.\n"
+                    "The context may contain CRM records, knowledge articles, policy documents, or product descriptions.\n"
+                    "Search ALL of the provided content — including knowledge articles and product descriptions — for the answer.\n"
+                    f"{_CRM_DRIFT_NOTE}\n\n"
+                    "Answer concisely. For yes/no questions: answer Yes or No only.\n"
+                    "For factual questions: give the exact term, name, or phrase from the data.\n"
+                    "If the context does not contain the answer, respond with exactly: None\n"
+                    "No explanation, no prefix, no punctuation at the end. Just the answer."
+                )
             user_msg = f"Question: {prompt}\n\nContext:\n{context[:50000]}"
         else:
             # No context provided — use LLM's built-in CRM and Salesforce knowledge
