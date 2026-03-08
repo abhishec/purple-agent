@@ -2209,6 +2209,16 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
             print(f"[crm] strip-prefix cat={category} {answer[:40]!r}→{stripped!r}", flush=True)
             answer = stripped
 
+    # ── Post-process: month number → full month name for monthly_trend_analysis ─
+    # If code returned "3" (month number) instead of "March", convert it.
+    # Only for the specific category where the answer is definitively a month.
+    if (answer and answer != "None" and category == "monthly_trend_analysis"
+            and answer.strip().isdigit() and 1 <= int(answer.strip()) <= 12):
+        import calendar as _cal
+        _month_name = _cal.month_name[int(answer.strip())]
+        print(f"[crm] month-num→name cat={category} {answer!r}→{_month_name!r}", flush=True)
+        answer = _month_name
+
     # ── Record outcome to Brain (all 5 layers, zero LLM cost) ─────────────────
     if _crm_router is not None:
         reward = _crm_router.reward(answer, strategy)
