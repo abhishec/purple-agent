@@ -1890,8 +1890,9 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             # Entity-specific: single record lookup (lead, opp, quote, etc.) — NOT aggregation
             system_prompt = (
                 f"You are a {persona} — a CRM expert.\n"
-                "The CRM data contains ONE specific record. Answer the question by reading the "
-                "relevant field(s) directly from that record.\n"
+                "The CRM data contains the record(s) for this specific task. "
+                "If there is one record, read it directly. "
+                "If there are multiple records, use the ID or criteria from the question to identify the correct one.\n"
                 f"{_CRM_DRIFT_NOTE}\n\n"
                 "CRITICAL: Return ONLY the exact answer value — no explanation:\n"
                 "- Field values: return the exact string as stored in the record (e.g., 'Prospecting', 'Web', 'Active')\n"
