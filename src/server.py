@@ -1336,15 +1336,15 @@ _CRM_CATEGORY_HINTS = {
     "sales_amount_understanding": (
         "Aggregate the amount field specified or implied in the question. "
         "_af = next((f for f in ['Amount','TotalAmount','Revenue','ARR','MRR','SalesAmount','DealValue','Price','Value'] if data and data[0].get(f) is not None), 'Amount'). "
-        "Filter records per the question (adapt conditions): "
-        "  Stage filter: filtered = [r for r in data if r.get('StageName') == 'Closed Won']. "
-        "  Date filter:  filtered = [r for r in data if _safe_date(r.get('CloseDate')) and _safe_date(r.get('CloseDate')) >= cutoff]. "
-        "  Owner filter: filtered = [r for r in data if r.get('OwnerId') == owner_id]. "
-        "  No filter:    filtered = data. "
+        "Filter records per the question (choose ONE, adapt as needed): "
+        "  filtered = [r for r in data if r.get('StageName') == 'Closed Won']  # stage filter. "
+        "  filtered = [r for r in data if _safe_date(r.get('CloseDate')) and _safe_date(r.get('CloseDate')) >= cutoff]  # date filter. "
+        "  filtered = data  # no filter. "
         "vals = [float(r.get(_af)) for r in filtered if r.get(_af) is not None]. "
-        "Sum question: total = sum(vals); print(int(total) if total == int(total) else round(total, 2)) if vals else print(0). "
-        "Average question: avg = statistics.mean(vals); print(int(avg) if avg == int(avg) else round(avg, 2)) if vals else print(None). "
-        "Count question ('how many'/'count'): print(len(filtered))."
+        "# Read the question to pick output mode: "
+        "# 'total'/'sum'/'aggregate' question: total = sum(vals); print(int(total) if total % 1 == 0 else round(total, 2)) if vals else print(0). "
+        "# 'average'/'mean'/'avg' question:   avg = statistics.mean(vals); print(int(avg) if avg % 1 == 0 else round(avg, 2)) if vals else print(None). "
+        "# 'how many'/'count' question:        print(len(filtered))."
     ),
     "handle_time": (
         "Calculate handle time across cases. "
