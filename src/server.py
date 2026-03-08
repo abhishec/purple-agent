@@ -1352,7 +1352,7 @@ _CRM_CATEGORY_HINTS = {
     ),
     "transfer_count": (
         "Count case transfers. Priority order: "
-        "1. Pre-computed field: _tf = next((f for f in ['TransferCount','transfer_count','NumberOfTransfers','TransferredCount'] if data and data[0].get(f) is not None), None). "
+        "1. Pre-computed field: _tf = next((f for f in ['TransferCount','transfer_count','NumberOfTransfers','TransferredCount'] if any(r.get(f) is not None for r in data[:5])), None). "  # Bug 092: check data[:5]
         "   If found: _tv = data[0].get(_tf); print(int(float(str(_tv)))) if _tv not in (None,'','N/A','n/a') else print(0). NOTE: 0 is valid. "
         "2. Transfer event rows: if each row = a separate transfer event (has TransferDate/FromAgent/ToAgent), print(len(data)). "
         "3. Status-based: count = sum(1 for r in data if 'transfer' in str(r.get('Status','')+r.get('PreviousStatus','')).lower()); print(count). "
@@ -1393,7 +1393,7 @@ _CRM_CATEGORY_HINTS = {
         "  _yr_m_ht=re.search(r'\\b(20\\d{2})\\b', prompt_text); _yr_ht=int(_yr_m_ht.group(1)) if _yr_m_ht else None. "
         "  _df_ht = lambda r: _safe_date(r.get('ClosedDate') or r.get('ResolvedDate') or r.get('SolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')). "
         "  rows = [r for r in data if _df_ht(r) and _df_ht(r).year==_yr_ht] if _yr_ht else list(data). "
-        "_ht_field = next((f for f in ['HandleTime','AverageHandleTime','AHT','AvgHandleTime','ResolutionTime','TalkTime','HoldTime'] if data and data[0].get(f) is not None), None). "
+        "_ht_field = next((f for f in ['HandleTime','AverageHandleTime','AHT','AvgHandleTime','ResolutionTime','TalkTime','HoldTime'] if any(r.get(f) is not None for r in data[:5])), None). "  # Bug 092: check data[:5]
         "_is_max_ht = any(w in _q for w in ['maximum','longest','max','largest','highest','worst']). "
         "_is_min_ht = any(w in _q for w in ['minimum','shortest','min','smallest','lowest','best']). "
         "if _ht_field:  # pre-computed field path "
@@ -1421,7 +1421,7 @@ _CRM_CATEGORY_HINTS = {
         "  _use_conv_date = any(p in _q for p in ['converted in','conversion date','was converted in','converted during']).  # True when filtering by conversion date vs creation date "
         "  _df_cr = lambda r: _safe_date(r.get('ConvertedDate') or r.get('CreatedDate') or r.get('ActivityDate')) if _use_conv_date else _safe_date(r.get('CreatedDate') or r.get('ActivityDate') or r.get('ConvertedDate')). "
         "  rows_cr = [r for r in data if _df_cr(r) and _df_cr(r).year==_yr_cr] if _yr_cr else list(data). "
-        "_rf = next((f for f in ['ConversionRate','conversion_rate','Rate','ConvertedRate'] if data and data[0].get(f) is not None), None). "
+        "_rf = next((f for f in ['ConversionRate','conversion_rate','Rate','ConvertedRate'] if any(r.get(f) is not None for r in data[:5])), None). "  # Bug 092: check data[:5]
         "if _rf and not _is_count_q:  # pre-computed rate field — skip when count is needed "
         "    _rv = [float(r.get(_rf)) for r in rows_cr if r.get(_rf) is not None]. "
         "    v = statistics.mean(_rv) if _rv else None. "
@@ -1568,10 +1568,10 @@ _CRM_CATEGORY_HINTS = {
         "  _status_kw = next((v for k,v in {'open':'Open','closed':'Closed','resolved':'Resolved','escalated':'Escalated','pending':'Pending'}.items() if re.search(r'\\b'+k+r'\\b', _q)), None). "
         "  if _status_kw: rows=[r for r in rows if (r.get('Status') or r.get('StatusCode') or '').lower()==_status_kw.lower()].  # Bug 088: filter by open/closed status when specified "
         "Step 1 — pick the groupby field based on question keywords: "
-        "  if any(w in _q for w in ['reason','cause']): _f = next((f for f in ['Reason','CaseReason','Category'] if data and data[0].get(f)), None). "
-        "  elif any(w in _q for w in ['type','case type']): _f = next((f for f in ['Type','CaseType','IssueType'] if data and data[0].get(f)), None). "
-        "  elif 'category' in _q: _f = next((f for f in ['Category','CaseType','IssueType','Type'] if data and data[0].get(f)), None). "
-        "  elif 'subject' in _q: _f = next((f for f in ['Subject','Title'] if data and data[0].get(f)), None). "
+        "  if any(w in _q for w in ['reason','cause']): _f = next((f for f in ['Reason','CaseReason','Category'] if any(r.get(f) for r in data[:5])), None). "  # Bug 092: data[:5]
+        "  elif any(w in _q for w in ['type','case type']): _f = next((f for f in ['Type','CaseType','IssueType'] if any(r.get(f) for r in data[:5])), None). "
+        "  elif 'category' in _q: _f = next((f for f in ['Category','CaseType','IssueType','Type'] if any(r.get(f) for r in data[:5])), None). "
+        "  elif 'subject' in _q: _f = next((f for f in ['Subject','Title'] if any(r.get(f) for r in data[:5])), None). "
         "  else: _f = None. "
         "  if _f is None: _f = max(['Type','Category','CaseType','IssueType','Reason','Subject'], key=lambda f: sum(1 for r in rows if r.get(f)), default=None).  # fallback: auto-detect best field "
         "Step 2 — count and return (min or max per question): "
@@ -1811,7 +1811,10 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         if isinstance(_ctx_parsed, list) and _ctx_parsed:
             _total_records = len(_ctx_parsed)
             if isinstance(_ctx_parsed[0], dict):
-                _upfront_field_hint = f"\nActual fields available: {list(_ctx_parsed[0].keys())}"
+                # Bug 093: union of keys from first 5 records — sparse CRM data may have fields
+                # only in record 1+ that are None/absent in record 0
+                _all_keys = list(dict.fromkeys(k for r in _ctx_parsed[:5] if isinstance(r, dict) for k in r.keys()))
+                _upfront_field_hint = f"\nActual fields available: {_all_keys}"
             # For large datasets: show sample to LLM (full data stays in sandbox)
             if _total_records > 10 and len(context) > 8000:
                 _sample = _ctx_parsed[:5]  # 5 records for schema
