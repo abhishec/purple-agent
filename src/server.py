@@ -2055,9 +2055,12 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
             _tool_budget = max(55.0 - _elapsed_pre, 5.0)
             if _tool_budget > 5.0:
                 try:
+                    # Entity-specific → llm_direct only needs ~25s, so allow 25s fetch
+                    # Aggregate analytical → code_exec needs ~40s, so limit fetch to 15s
+                    _fetch_max = 25.0 if category in _CRM_ENTITY_SPECIFIC_CATEGORIES else 15.0
                     fetched = await asyncio.wait_for(
                         _crm_fetch_context_via_tools(_fetch_ep, prompt, category, session_id, context),
-                        timeout=min(_tool_budget - 2.0, 15.0),  # max 15s: code_exec needs 40s
+                        timeout=min(_tool_budget - 2.0, _fetch_max),
                     )
                     if fetched and _context_has_real_data(fetched):
                         context = fetched
