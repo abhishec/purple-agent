@@ -1884,6 +1884,9 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         elif "zerodivisionerror" in err_lower:
             _fix_hints.insert(0, "- ZeroDivisionError: guard against empty data: if not data or len(data) == 0: print(None); exit()")
             _fix_hints.insert(1, "- Also check denominator: if total > 0: rate = count / total * 100 else: rate = 0")
+        elif "nameerror" in err_lower:
+            _fix_hints.insert(0, "- NameError: variable used before assignment — define ALL variables before use")
+            _fix_hints.insert(1, "- Common fix: assign 'result', 'final', 'divisor', 'today', 'cutoff' before using them in print()")
         elif "attributeerror" in err_lower:
             _fix_hints.insert(0, "- AttributeError: check object types before calling methods")
         elif "no output" in err_lower:
