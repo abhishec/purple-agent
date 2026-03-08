@@ -1297,10 +1297,14 @@ _CRM_CATEGORY_HINTS = {
         "If no matching records, return 0 for count/sum, None if question is not a count."
     ),
     "handle_time": (
-        "Calculate handle time across ALL cases. "
-        "Look for HandleTime, handle_time, AverageHandleTime fields first — if present, average them directly. "
-        "Otherwise compute: timedelta = _safe_date(ClosedDate) - _safe_date(CreatedDate). "
-        "Output units: if question says hours → divide by 3600; if days → divide by 86400; default = MINUTES (divide by 60). "
+        "Calculate handle time across cases. "
+        "FIRST: check pre-computed field: AverageHandleTime, HandleTime, AHT, AvgHandleTime, ResolutionTime. "
+        "If found: vals = [float(r.get('HandleTime') or r.get('AHT') or 0) for r in data if (r.get('HandleTime') or r.get('AHT')) is not None]; "
+        "print(round(statistics.mean(vals), 2)) if vals else print(None). "
+        "ELSE compute from dates: start = _safe_date(r.get('CreatedDate')); "
+        "end = _safe_date(r.get('ClosedDate') or r.get('ResolvedDate') or r.get('SolvedDate') or r.get('CompletedDate')). "
+        "duration_s = (end - start).total_seconds() if start and end else None. "
+        "Output: default = MINUTES (divide by 60); if 'hours': divide by 3600; if 'days': divide by 86400. "
         "int() for whole-number results, round(x, 2) for decimals."
     ),
     "conversion_rate_comprehension": (
