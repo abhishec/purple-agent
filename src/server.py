@@ -1516,16 +1516,27 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     # Extract actual field names from the JSON data to help fix KeyError failures
     _field_hint = ""
     try:
-        import json as _j, ast as _ast
+        import json as _j, ast as _ast, re as _re_fh
+        _ctx_data = None
         try:
             _ctx_data = _j.loads(ctx)
         except Exception:
-            _ctx_data = _ast.literal_eval(ctx)
-        if isinstance(_ctx_data, list) and _ctx_data:
+            # Try each '[' or '{' position — handle '[System Notice:...]' prefixes
+            for _m in _re_fh.finditer(r'[\[{]', ctx):
+                try:
+                    _p, _ = _j.JSONDecoder().raw_decode(ctx, _m.start())
+                    if isinstance(_p, (list, dict)) and _p:
+                        _ctx_data = _p; break
+                except Exception:
+                    continue
+        if _ctx_data is None:
+            try: _ctx_data = _ast.literal_eval(ctx)
+            except Exception: pass
+        if isinstance(_ctx_data, list) and _ctx_data and isinstance(_ctx_data[0], dict):
             _field_hint = f"\nActual fields in data[0]: {list(_ctx_data[0].keys())}"
         elif isinstance(_ctx_data, dict):
             for _v in _ctx_data.values():
-                if isinstance(_v, list) and _v:
+                if isinstance(_v, list) and _v and isinstance(_v[0], dict):
                     _field_hint = f"\nActual fields in data[0]: {list(_v[0].keys())}"
                     break
     except Exception:
