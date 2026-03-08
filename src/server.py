@@ -1207,6 +1207,8 @@ Using `data`:
 - When accessing dict keys, try aliases: record.get('OwnerId') or record.get('AssignedAgent')
 - Check for None/null values before arithmetic: skip records where field is None or field == ''
 - Integer output: if result is a whole number, use int(result) to avoid '3.0' instead of '3'
+- Nested fields: if a field is a dict, access nested values: record.get('Account', {}).get('Name')
+- List fields: if a field contains a list, iterate or count: len(record.get('Tags', []))
 
 Field aliases (handle both names): AssignedAgent=OwnerId, ClientId=AccountId,
 PersonRef=ContactId, StatusCode=Status, Title=Subject, Details=Description.
