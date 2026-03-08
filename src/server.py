@@ -1390,14 +1390,17 @@ _CRM_CATEGORY_HINTS = {
         "If field is missing or answer cannot be determined: return None."
     ),
     "activity_priority": (
-        "Find ALL tasks matching the criteria in the question. "
+        "Find ALL tasks matching ALL criteria in the question. "
         "Task ID field: Id (primary), fallback to TaskId or ActivityId. "
-        "Filter criteria: Status ('Not Started','In Progress','Open'), Priority ('High','Normal','Low'), "
-        "DueDate/ActivityDate range, OwnerId/AssignedTo/Owner. "
-        "For due date: compare _safe_date(r.get('ActivityDate') or r.get('DueDate')). "
-        "Pattern: matches = [r.get('Id') or r.get('TaskId') or r.get('ActivityId') for r in data if <all_conditions>]. "
+        "Filter conditions (combine with 'and' for all that apply): "
+        "  r.get('Status') in ('Not Started','Open')  [or per question] "
+        "  r.get('Priority') == 'High'  [or 'Normal'/'Low' per question] "
+        "  _safe_date(r.get('ActivityDate') or r.get('DueDate')) <= today  [due date check] "
+        "  r.get('OwnerId') == 'some_id'  [owner check] "
+        "Example: matches = [r.get('Id') or r.get('TaskId') for r in data "
+        "    if r.get('Status') == 'Not Started' and r.get('Priority') == 'High']. "
         "CRITICAL: if not matches: print(None). If matches: print(matches) as a Python list. "
-        "Sort by Priority then DueDate if question asks for prioritized order."
+        "Sort by Priority ('High' first) then DueDate ascending if question asks for priority order."
     ),
     "wrong_stage_rectification": (
         "This is ONE specific opportunity record. "
