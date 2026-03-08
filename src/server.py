@@ -1257,11 +1257,15 @@ Always wrap code in ```python\\n...\\n``` fences."""
 _CRM_CATEGORY_HINTS = {
     "monthly_trend_analysis": (
         "Find which month has the highest (or lowest, per question) total/count. "
-        "Use _safe_date(r.get('DateField')).strftime('%B') for month names — NEVER return month number. "
-        "Try date fields: CreatedDate, CloseDate, Date, TransactionDate, ActivityDate. "
-        "monthly = defaultdict(float); for r in data: d = _safe_date(r.get('CreatedDate')); "
-        "if d: monthly[d.strftime('%B')] += float(r.get('Amount', 1) or 1). "
-        "print(max(monthly, key=monthly.get)) — or min() if question asks lowest."
+        "NEVER return a month number — always full name via strftime('%B'). "
+        "Date field fallback chain: CreatedDate → CloseDate → Date → ActivityDate → TransactionDate → OrderDate. "
+        "Amount mode (revenue/sales questions): sum Amount or Revenue field. "
+        "Count mode (count/volume questions): count records (add 1 per record). "
+        "Use: monthly = defaultdict(float); "
+        "for r in data: d = _safe_date(r.get('CreatedDate')) or _safe_date(r.get('CloseDate')) or _safe_date(r.get('Date')) or _safe_date(r.get('ActivityDate')); "
+        "_amt = r.get('Amount') or r.get('Revenue') or r.get('TotalAmount'); "
+        "if d: monthly[d.strftime('%B')] += float(_amt) if _amt is not None else 1. "
+        "print(max(monthly, key=monthly.get)) if monthly else print(None) — or min() if lowest."
     ),
     "lead_routing": (
         "CRITICAL: The routing RULES come from the question text — parse them in Python as if/elif chains. "
@@ -1307,7 +1311,8 @@ _CRM_CATEGORY_HINTS = {
     ),
     "best_region_identification": (
         "Find which region has the highest (or lowest, per the question) metric. "
-        "Try region field names: Region, State, Territory, BillingState, BillingCountry, Province, Area, Zone. "
+        "Try region field names: Region, State, Territory, BillingState, BillingCountry, "
+        "ShippingState, Country, Province, Area, Zone, Location, District. "
         "Group by region (skip None/empty), aggregate metric (sum Amount or count records), "
         "then max(grouped, key=grouped.get) or min() per the question. "
         "Output: exact region string as it appears in data."
@@ -1342,12 +1347,16 @@ _CRM_CATEGORY_HINTS = {
         "Skip records where CloseDate or CreatedDate is None."
     ),
     "sales_insight_mining": (
-        "Extract the key sales insight requested. "
-        "Return a SHORT exact value: agent name, region, product name, month, number. "
-        "Do NOT return a paragraph — just the name/value. "
-        "If question asks for top agent: return their exact name as in data. "
-        "If question asks for top region: return exact region/state value. "
-        "print(None) only if no data exists for the question."
+        "Identify (1) what to GROUP BY from the question, (2) what metric to aggregate. "
+        "Use this groupby+aggregate pattern: "
+        "groups = defaultdict(float); "
+        "[for r in data: k=r.get('FieldName'); v=float(r.get('Amount') or 0); if k: groups[k]+=v]; "
+        "print(max(groups, key=groups.get)) if groups else print(None). "
+        "Agent/rep fields: AssignedTo, OwnerId, SalesRep, AgentName, OwnerName. "
+        "Product fields: ProductName, Product, Item, SKU, ProductFamily. "
+        "Region fields: Region, Territory, BillingState, State, Area. "
+        "For count-based (most X): Counter(r.get('Field') for r in data if r.get('Field')).most_common(1)[0][0]. "
+        "Return EXACT entity name as in data. For min/worst: use min(). print(None) if no data."
     ),
     "top_issue_identification": (
         "Find the most frequent issue category/type across all cases. "
