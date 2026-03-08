@@ -1278,16 +1278,18 @@ _CRM_CATEGORY_HINTS = {
         "Output: just the integer count."
     ),
     "sales_amount_understanding": (
-        "Calculate sum, average, or find specific sales amounts. "
-        "Look for Amount, TotalAmount, Revenue fields."
+        "Aggregate Amount, TotalAmount, Revenue, ARR, MRR, or SalesAmount fields. "
+        "For sum: int(sum(v for r in data if (v := r.get('Amount')) is not None)). "
+        "For average: round(statistics.mean([v for r in data if r.get('Amount') is not None]), 2). "
+        "Filter by StageName/Status (e.g., 'Closed Won'), date range, owner, or region as question specifies. "
+        "Skip None values. int() for whole-number results, round(x, 2) for decimals."
     ),
     "handle_time": (
-        "Calculate average handle time across ALL cases. "
-        "Use _safe_date() for dates. Compute timedelta = close_date - open_date. "
-        "Output in MINUTES (most common). If question says hours: output hours. "
-        "Look for HandleTime, handle_time fields first — if present, average them directly. "
-        "Otherwise use CreatedDate/ClosedDate or CreatedDate/LastModifiedDate. "
-        "Round to 2 decimal places. Use int() if the result is a whole number."
+        "Calculate handle time across ALL cases. "
+        "Look for HandleTime, handle_time, AverageHandleTime fields first — if present, average them directly. "
+        "Otherwise compute: timedelta = _safe_date(ClosedDate) - _safe_date(CreatedDate). "
+        "Output units: if question says hours → divide by 3600; if days → divide by 86400; default = MINUTES (divide by 60). "
+        "int() for whole-number results, round(x, 2) for decimals."
     ),
     "conversion_rate_comprehension": (
         "If question asks for rate/percentage: rate = converted_count / total * 100, round to 2 decimal places. "
@@ -1322,10 +1324,11 @@ _CRM_CATEGORY_HINTS = {
         "If cannot determine: return None."
     ),
     "sales_cycle_understanding": (
-        "Analyze sales cycle duration. "
-        "Use _safe_date() on CreatedDate and CloseDate (or StageName change dates). "
-        "Output duration in days (integer). Round to nearest whole day. "
-        "If question asks for average: average all durations with int() or round(x, 1)."
+        "Analyze sales cycle duration from CreatedDate to CloseDate (or first-contact to close). "
+        "Use _safe_date() for dates. timedelta = _safe_date(r['CloseDate']) - _safe_date(r['CreatedDate']). "
+        "Default output unit: days (td.days). If question says hours: td.total_seconds()/3600. "
+        "For average: round(statistics.mean([td.days for ...]), 1). int() if whole number. "
+        "Skip records where CloseDate or CreatedDate is None."
     ),
     "sales_insight_mining": (
         "Extract the key sales insight requested. "
