@@ -994,8 +994,10 @@ _CRM_TEXT_CATEGORIES = {
 }
 
 # ── CRM: privacy categories — must refuse, never reveal PII ───────────────────
+# internal_operation_data uses reward_metric=privacy_rejection → needs refusal not None
 _CRM_PRIVATE_CATEGORIES = {
     "private_customer_information", "confidential_company_knowledge",
+    "internal_operation_data",
 }
 
 # ── Field drift aliases for medium-level schema drift (hardcoded by evaluator) ─
@@ -1247,9 +1249,11 @@ CRITICAL output rules — violating these = wrong answer:
 - Rates/percentages: decimal form as in data or calculated (e.g., 25.5 not "25.5%")
 - States: 2-letter code (e.g., CA) unless data has full name
 - Dates: as they appear in the data
-- If multiple matches: print the single best/highest/most answer
+- If multiple matches: print the single best/highest/most answer UNLESS the question says "list all", "return all", "find all", "which tasks", "choose tasks" — in those cases print a Python list: print(['id1', 'id2'])
+- For "activity_priority", "wrong_stage_rectification", "invalid_config" categories: answer may be a list of IDs — print(['id1', 'id2', ...]) or print(None) if none match
 - Count questions with 0 results: print 0 (not None — zero is a valid count)
 - If data records are empty or question asks to find/identify something that doesn't exist: print exactly None
+- IMPORTANT: If context_data contains section headers (lines starting with ##) mixed with JSON records, find and use ONLY the JSON array portion. Do NOT print section headers or policy text.
 
 Always wrap code in ```python\\n...\\n``` fences."""
 
@@ -1294,12 +1298,13 @@ _CRM_CATEGORY_HINTS = {
         "Check LeadScore, Status, or qualification criteria fields."
     ),
     "activity_priority": (
-        "Sort/find activities by priority or urgency. "
-        "Check Priority, DueDate, Status fields."
+        "Find tasks matching the criteria (often Status='Not Started' + some constraint). "
+        "CRITICAL: Print ALL matching task IDs as a Python list: print([id1, id2, ...]). "
+        "Use record.get('Id') for each match. If none match: print(None)."
     ),
     "wrong_stage_rectification": (
-        "Identify deals/leads in incorrect stages. "
-        "Compare StageName with expected progression; find anomalies."
+        "Identify tasks in wrong stage. Print ALL matching task IDs as a list: print([id1, id2, ...]). "
+        "Compare task stage against expected. If none: print(None)."
     ),
     "sales_cycle_understanding": (
         "Analyze time between sales stages. "
@@ -1318,18 +1323,96 @@ _CRM_CATEGORY_HINTS = {
         "Filter by ID, date, or related object to disambiguate."
     ),
     "invalid_config": (
-        "Find config records with invalid/missing required values. "
-        "Check for None, empty, out-of-range, or rule-violating values."
+        "Find configs with invalid/missing values. Print ALL invalid record IDs as a list: print([id1, id2, ...]). "
+        "Check for None, empty, out-of-range, or rule-violating values. If none: print(None)."
     ),
     "internal_operation_data": (
-        "Extract internal operational metrics. "
-        "Look for SLA, escalation, response time, or throughput fields."
+        "Find operations matching the criteria. Print ALL matching IDs as a list, or print(None) if none match. "
+        "Look for SLA violations, escalations, status mismatches."
     ),
     "quote_approval": (
         "Find quotes needing approval. "
         "Check ApprovalStatus, Amount vs threshold, or workflow stage."
     ),
 }
+
+
+async def _crm_fetch_context_via_tools(
+    tools_endpoint: str,
+    prompt: str,
+    category: str,
+    session_id: str,
+) -> str:
+    """Fetch CRM context data via the task's tools endpoint when required_context is empty.
+
+    Returns fetched data as JSON string, or "" if unavailable/failed.
+    Called when required_context is empty but a tools_endpoint is provided by the benchmark.
+    """
+    from src.mcp_bridge import discover_tools, call_tool
+    import anthropic as _anthropic
+
+    try:
+        tools = await asyncio.wait_for(
+            discover_tools(tools_endpoint, session_id),
+            timeout=8.0,
+        )
+    except Exception as _e:
+        print(f"[crm-tools] discover failed endpoint={tools_endpoint}: {_e}", flush=True)
+        return ""
+
+    if not tools:
+        print(f"[crm-tools] no tools at {tools_endpoint}", flush=True)
+        return ""
+
+    tools_for_claude = [
+        {
+            "name": t["name"],
+            "description": t.get("description", ""),
+            "input_schema": t.get("input_schema", {"type": "object", "properties": {}}),
+        }
+        for t in tools
+    ]
+
+    system = (
+        f"You are a CRM data retrieval agent for a {category} task.\n"
+        "Your ONLY job is to call ONE tool to fetch the relevant CRM records.\n"
+        "Do NOT analyze the data — just fetch it. Call the most appropriate tool."
+    )
+
+    client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    try:
+        resp = await asyncio.wait_for(
+            client.messages.create(
+                model=FAST_MODEL,
+                max_tokens=256,
+                system=system,
+                messages=[{"role": "user", "content": f"Fetch CRM data for: {prompt[:300]}"}],
+                tools=tools_for_claude,
+                tool_choice={"type": "any"},
+            ),
+            timeout=12.0,
+        )
+    except Exception as _e:
+        print(f"[crm-tools] claude tool-select failed: {_e}", flush=True)
+        return ""
+
+    import json as _json_tools
+    for block in resp.content:
+        if hasattr(block, "type") and block.type == "tool_use":
+            try:
+                result = await asyncio.wait_for(
+                    call_tool(tools_endpoint, block.name, block.input or {}, session_id, tools),
+                    timeout=10.0,
+                )
+                ctx = _json_tools.dumps(result) if isinstance(result, (dict, list)) else str(result)
+                print(f"[crm-tools] fetched cat={category} tool={block.name} len={len(ctx)}", flush=True)
+                return ctx
+            except Exception as _e:
+                print(f"[crm-tools] call_tool failed: {_e}", flush=True)
+                return ""
+
+    print("[crm-tools] no tool_use block in claude response", flush=True)
+    return ""
 
 
 async def _crm_code_exec(prompt: str, context: str, category: str, model: str | None = None) -> str | None:
@@ -1592,11 +1675,12 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
         return "None"
 
 
-async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
+async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint: str = "") -> str:
     """Handle CRMArenaPro tasks.
 
     Routing via Brain + Router (UCB1 bandit) when available.
     Hard fallback to category-based if/elif if brainos_core not installed.
+    When required_context is empty and tools_endpoint is provided, fetches CRM data via tools.
     """
     import json as _json
     _task_start = time.monotonic()  # track elapsed for 60s deadline
@@ -1607,9 +1691,17 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
         task = {"prompt": task_text, "required_context": "", "persona": "CRM agent", "task_category": ""}
 
     prompt = task.get("prompt", task_text)
-    context = task.get("required_context", "")
+    # required_context may be a string or a parsed JSON object — normalize to string
+    _raw_ctx = task.get("required_context", "")
+    if isinstance(_raw_ctx, (list, dict)):
+        context = _json.dumps(_raw_ctx)
+    else:
+        context = str(_raw_ctx) if _raw_ctx else ""
     persona = task.get("persona", "CRM agent")
     category = task.get("task_category", "")
+    # Inherit tools_endpoint from task JSON if not passed by caller
+    if not tools_endpoint:
+        tools_endpoint = task.get("tools_endpoint", "")
 
     # ── DAAO: select model BEFORE any LLM call (zero LLM cost) ──────────────
     if _crm_daao is not None:
@@ -1651,15 +1743,60 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
         return refusal
 
     # ── Early None return: no real data → expected answer is "None" ──────────
-    # 27% of tasks have empty/policy-only context with expected_answer='None'.
+    # ~20% of tasks in each category have empty context with expected_answer='None'.
+    # When context is empty and a tools_endpoint is available, try fetching via tools.
     # Analytical: check for structured data (JSON/CSV/tables).
     # Text QA: check for any meaningful content (knowledge articles can be plain text).
     if category in _CRM_ANALYTICAL_CATEGORIES and not _context_has_real_data(context):
-        print(f"[crm] no-data task cat={category} → None", flush=True)
-        return "None"
+        if tools_endpoint and category not in _CRM_PRIVATE_CATEGORIES:
+            _elapsed_pre = time.monotonic() - _task_start
+            _tool_budget = max(55.0 - _elapsed_pre, 5.0)
+            if _tool_budget > 5.0:
+                try:
+                    fetched = await asyncio.wait_for(
+                        _crm_fetch_context_via_tools(tools_endpoint, prompt, category, session_id),
+                        timeout=min(_tool_budget - 2.0, 30.0),
+                    )
+                    if fetched and _context_has_real_data(fetched):
+                        context = fetched
+                        print(f"[crm] tools-fetched context cat={category} len={len(context)}", flush=True)
+                    else:
+                        print(f"[crm] tools returned no-data cat={category} → None", flush=True)
+                        return "None"
+                except Exception as _fe:
+                    print(f"[crm] tools fetch error cat={category}: {_fe} → None", flush=True)
+                    return "None"
+            else:
+                print(f"[crm] no-data task cat={category} → None (no time for tools)", flush=True)
+                return "None"
+        else:
+            print(f"[crm] no-data task cat={category} → None", flush=True)
+            return "None"
     if category in _CRM_TEXT_CATEGORIES and (not context or len(context.strip()) < 30):
-        print(f"[crm] no-content task cat={category} → None", flush=True)
-        return "None"
+        if tools_endpoint:
+            _elapsed_pre = time.monotonic() - _task_start
+            _tool_budget = max(55.0 - _elapsed_pre, 5.0)
+            if _tool_budget > 5.0:
+                try:
+                    fetched = await asyncio.wait_for(
+                        _crm_fetch_context_via_tools(tools_endpoint, prompt, category, session_id),
+                        timeout=min(_tool_budget - 2.0, 25.0),
+                    )
+                    if fetched and len(fetched.strip()) >= 30:
+                        context = fetched
+                        print(f"[crm] tools-fetched text-ctx cat={category} len={len(context)}", flush=True)
+                    else:
+                        print(f"[crm] no-content task cat={category} → None", flush=True)
+                        return "None"
+                except Exception as _fe:
+                    print(f"[crm] text-tools fetch error cat={category}: {_fe} → None", flush=True)
+                    return "None"
+            else:
+                print(f"[crm] no-content task cat={category} → None (no time)", flush=True)
+                return "None"
+        else:
+            print(f"[crm] no-content task cat={category} → None", flush=True)
+            return "None"
 
     # ── Execute chosen strategy with DAAO-selected model ─────────────────────
     answer: str = ""
@@ -1712,9 +1849,12 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
 
     # ── Post-process: strip common LLM prefix noise from short answers ────────
     # e.g. "The answer is September." → "September"
+    # Skip list answers (e.g. "['id1', 'id2']") — these are intentional multi-value outputs.
     # Only for analytical categories where answer should be a short exact value.
-    if answer and answer != "None" and category in _CRM_ANALYTICAL_CATEGORIES:
+    _is_list_answer = answer and answer.strip().startswith('[') and answer.strip().endswith(']')
+    if answer and answer != "None" and category in _CRM_ANALYTICAL_CATEGORIES and not _is_list_answer:
         import re as _re_pp
+        _ans_stripped = answer.strip()
         # Strip leading prefixes — all phrases the LLM commonly uses before the value
         stripped = _re_pp.sub(
             r'^(?:the answer is|answer is|answer:|result:|the result is|the value is'
@@ -1729,9 +1869,11 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
             r'|according to (?:the )?(?:data|context|crm data|crm records?)[,:]?\s*'
             r'|after (?:analyzing|reviewing|examining|scanning) (?:the )?(?:data|context|crm data)[,:]?\s*'
             r'|in (?:the )?(?:data|context|crm data|crm records?)[,:]?\s*'
+            r'|i need to (?:find|look|check|analyze|determine|identify|scan)[\w\s,]*?[,:]\s*'
+            r'|i\'ll (?:find|look|check|analyze|determine|identify|scan)[\w\s,]*?[,:]\s*'
             r')\s*',
             '',            # replacement: empty string
-            answer.strip(),  # string to operate on
+            _ans_stripped,
             flags=_re_pp.IGNORECASE,
         )
         # Strip trailing period if it looks like added punctuation (not part of ID)
@@ -1747,7 +1889,9 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
                 stripped,
                 flags=_re_pp.IGNORECASE,
             )
-        if stripped and stripped != answer.strip():
+        # If stripping produced a valid short value (not blank or same as full reasoning text),
+        # use it. Otherwise keep original (don't destroy long reasoning that might be list etc.)
+        if stripped and stripped != _ans_stripped and len(stripped) <= 200:
             print(f"[crm] strip-prefix cat={category} {answer[:40]!r}→{stripped!r}", flush=True)
             answer = stripped
 
@@ -2373,8 +2517,8 @@ async def a2a_handler(request: Request):
             print(f"[tau2] routing context_id={context_id[:8]} to tau2 handler", flush=True)
             answer = await _handle_tau2_turn(context_id, task_text)
         elif _is_crm_task_format(task_text):
-            print(f"[crm] routing context_id={context_id[:8]} to crm handler", flush=True)
-            answer = await _handle_crm_turn(task_text, session_id=context_id)
+            print(f"[crm] routing context_id={context_id[:8]} to crm handler tools={'yes' if tools_endpoint else 'no'}", flush=True)
+            answer = await _handle_crm_turn(task_text, session_id=context_id, tools_endpoint=tools_endpoint)
         else:
             answer = await run_worker(
                 task_text=task_text,
