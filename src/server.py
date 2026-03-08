@@ -1000,6 +1000,16 @@ _CRM_PRIVATE_CATEGORIES = {
     "internal_operation_data",
 }
 
+# ── Entity-specific categories: single-record lookup via tools endpoint ─────────
+# These categories operate on ONE specific entity (lead, opportunity, quote, etc.)
+# fetched via per-task MCP tools endpoint. After fetch, use llm_direct (not code_exec)
+# because:  (a) task is a simple field read, not aggregation
+#            (b) llm_direct is faster — avoids 2× LLM+sandbox overhead within 60s limit
+_CRM_ENTITY_SPECIFIC_CATEGORIES = {
+    "lead_qualification", "wrong_stage_rectification", "invalid_config",
+    "quote_approval", "named_entity_disambiguation",
+}
+
 # ── Field drift aliases for medium-level schema drift (hardcoded by evaluator) ─
 _CRM_DRIFT_NOTE = (
     "Field name aliases (renamed in this data): "
@@ -1213,7 +1223,8 @@ Date handling:
 - Count by month: use Counter({d.strftime('%B'): count for d, count in ...})
 
 Conversion rate / percentage:
-- If data has IsConverted/is_converted field: rate = sum(1 for r in data if r.get('IsConverted')) / len(data) * 100
+- Boolean fields (IsConverted etc.) may be bool OR string: def is_true(v): return v in (True, 'true', 'True', 1, '1', 'Yes', 'yes', 'TRUE')
+- If data has IsConverted/is_converted field: rate = sum(1 for r in data if is_true(r.get('IsConverted'))) / len(data) * 100
 - If data has a numeric rate/percentage field: use the value as-is (may be 25.5 or 0.255 — return what's in data)
 - Round to 2 decimal places: round(rate, 2)
 
@@ -1782,7 +1793,12 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "- If no relevant records AND question is not a count: respond with exactly: None\n"
             "One value only. No prefix. No punctuation at end."
         )
-        user_msg = f"Category: {category}\nQuestion: {prompt}\n\nCRM Data:\n{context[:30000]}"
+        _entity_hint = _CRM_CATEGORY_HINTS.get(category, "")
+        user_msg = (
+            f"Category: {category}"
+            + (f" — {_entity_hint}" if _entity_hint else "") + "\n"
+            + f"Question: {prompt}\n\nCRM Data:\n{context[:30000]}"
+        )
     else:
         system_prompt = (
             f"You are a {persona} answering a CRM lookup question.\n"
@@ -1912,12 +1928,17 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                 try:
                     fetched = await asyncio.wait_for(
                         _crm_fetch_context_via_tools(_fetch_ep, prompt, category, session_id, context),
-                        timeout=min(_tool_budget - 2.0, 30.0),
+                        timeout=min(_tool_budget - 2.0, 15.0),  # max 15s: code_exec needs 40s
                     )
                     if fetched and _context_has_real_data(fetched):
                         context = fetched
                         _src = "task-ep" if tools_endpoint else "green-mcp"
                         print(f"[crm] fetched context cat={category} src={_src} len={len(context)}", flush=True)
+                        # Entity-specific categories: switch to llm_direct after fetch.
+                        # Avoids 2× LLM+sandbox overhead (code_exec too slow within 60s).
+                        if category in _CRM_ENTITY_SPECIFIC_CATEGORIES:
+                            strategy = "llm_direct"
+                            print(f"[crm] entity-specific → llm_direct cat={category}", flush=True)
                     else:
                         print(f"[crm] fetch no-data cat={category} → None", flush=True)
                         return "None"
