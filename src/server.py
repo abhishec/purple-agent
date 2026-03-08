@@ -1380,10 +1380,14 @@ _CRM_CATEGORY_HINTS = {
     ),
     "lead_qualification": (
         "This is ONE specific lead record. "
-        "Read the field(s) the question asks about (e.g., LeadSource, Rating, Status, ConvertedDate). "
-        "Return the exact field value as stored. "
-        "If the question asks about qualification status: return 'Qualified' or 'Not Qualified' based on the data. "
-        "If the field is missing or answer genuinely unknown: return None."
+        "Common question patterns: "
+        "'Is this lead qualified?' → return Yes or No (or 'Qualified'/'Not Qualified' per field value). "
+        "'What is the lead source?' → return exact LeadSource field value. "
+        "'What is the rating?' → return exact Rating value. "
+        "'Is this lead converted?' → check IsConverted field (True/False/string) → return Yes or No. "
+        "For any field query: return the EXACT field value as stored in the record. "
+        "Field aliases: LeadSource, Rating, Status, Score, Grade, ConvertedDate, IsConverted, Industry, Title. "
+        "If field is missing or answer cannot be determined: return None."
     ),
     "activity_priority": (
         "Find ALL tasks matching the criteria in the question. "
@@ -1450,9 +1454,12 @@ _CRM_CATEGORY_HINTS = {
     ),
     "invalid_config": (
         "This is ONE specific quote/record. "
-        "Check the fields the question specifies for invalid/missing values. "
-        "If a field is invalid: return the exact field NAME (e.g., 'DiscountRate') or the invalid value. "
-        "If all fields are valid per the criteria: return None."
+        "The question specifies which fields or conditions to validate. "
+        "'Which field is misconfigured/invalid?' → return the FIELD NAME (e.g., 'DiscountRate', 'ExpiryDate'). "
+        "'What is the invalid value?' → return the FIELD VALUE as stored. "
+        "'Is this configuration valid?' → return Yes or No. "
+        "If all fields are valid per the criteria: return None. "
+        "Check: negative values, out-of-range values, missing required fields, expired dates, invalid codes."
     ),
     # internal_operation_data: private category — always hard-refused, hint never used.
     "quote_approval": (
