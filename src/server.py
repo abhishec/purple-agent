@@ -1619,19 +1619,33 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
         user_msg = f"Question: {prompt}\n\nCRM Context:\n{context}"
     elif is_text_qa:
         # knowledge_qa, policy_violation_identification — reasoning over text, may need a phrase
-        system_prompt = (
-            f"You are a {persona} — a CRM expert.\n"
-            "Use ONLY the provided context to answer. Do not invent information.\n"
-            "The context may contain CRM records, knowledge articles, policy documents, or product descriptions.\n"
-            "Search ALL of the provided content — including knowledge articles and product descriptions — for the answer.\n"
-            f"{_CRM_DRIFT_NOTE}\n\n"
-            "Answer concisely. For yes/no questions: answer Yes or No only.\n"
-            "For factual questions: give the exact term, name, or phrase from the data.\n"
-            "For policy questions: identify the specific violation or policy name.\n"
-            "If the context does not contain the answer, respond with exactly: None\n"
-            "No explanation, no prefix, no punctuation at the end. Just the answer."
-        )
-        user_msg = f"Question: {prompt}\n\nContext:\n{context[:50000]}"
+        _ctx_available = context and len(context.strip()) >= 30
+        if _ctx_available:
+            system_prompt = (
+                f"You are a {persona} — a CRM expert.\n"
+                "Use ONLY the provided context to answer. Do not invent information.\n"
+                "The context may contain CRM records, knowledge articles, policy documents, or product descriptions.\n"
+                "Search ALL of the provided content — including knowledge articles and product descriptions — for the answer.\n"
+                f"{_CRM_DRIFT_NOTE}\n\n"
+                "Answer concisely. For yes/no questions: answer Yes or No only.\n"
+                "For factual questions: give the exact term, name, or phrase from the data.\n"
+                "For policy questions: identify the specific violation or policy name.\n"
+                "If the context does not contain the answer, respond with exactly: None\n"
+                "No explanation, no prefix, no punctuation at the end. Just the answer."
+            )
+            user_msg = f"Question: {prompt}\n\nContext:\n{context[:50000]}"
+        else:
+            # No context provided — use LLM's built-in CRM and Salesforce knowledge
+            system_prompt = (
+                f"You are a {persona} — a CRM and Salesforce expert.\n"
+                "Answer the CRM knowledge question from your expert knowledge.\n"
+                "Be concise. Give only the specific answer term, phrase, or value.\n"
+                "For definitions: give the exact term or brief definition.\n"
+                "For Yes/No questions: answer Yes or No only.\n"
+                "If you genuinely cannot answer: respond with exactly: None\n"
+                "No explanation, no prefix, no punctuation at the end. Just the answer."
+            )
+            user_msg = f"Question: {prompt}"
     elif category in _CRM_ANALYTICAL_CATEGORIES:
         # Analytical fallback: code_exec failed, ask Sonnet to reason directly
         system_prompt = (
@@ -1812,17 +1826,33 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                         _src = "task-ep" if tools_endpoint else "green-mcp"
                         print(f"[crm] fetched text-ctx cat={category} src={_src} len={len(context)}", flush=True)
                     else:
-                        print(f"[crm] no-content task cat={category} → None", flush=True)
-                        return "None"
+                        if category == "knowledge_qa":
+                            print(f"[crm] knowledge_qa: no fetched ctx, using internal LLM knowledge", flush=True)
+                            context = ""  # fall through to llm_direct with empty context
+                        else:
+                            print(f"[crm] no-content task cat={category} → None", flush=True)
+                            return "None"
                 except Exception as _fe:
-                    print(f"[crm] text fetch error cat={category}: {_fe} → None", flush=True)
-                    return "None"
+                    if category == "knowledge_qa":
+                        print(f"[crm] knowledge_qa fetch error, using internal LLM knowledge: {_fe}", flush=True)
+                        context = ""
+                    else:
+                        print(f"[crm] text fetch error cat={category}: {_fe} → None", flush=True)
+                        return "None"
             else:
-                print(f"[crm] no-content task cat={category} → None (no time)", flush=True)
-                return "None"
+                if category == "knowledge_qa":
+                    print(f"[crm] knowledge_qa: no time for fetch, using internal LLM knowledge", flush=True)
+                    context = ""
+                else:
+                    print(f"[crm] no-content task cat={category} → None (no time)", flush=True)
+                    return "None"
         else:
-            print(f"[crm] no-content task cat={category} → None", flush=True)
-            return "None"
+            if category == "knowledge_qa":
+                print(f"[crm] knowledge_qa: no endpoint, using internal LLM knowledge", flush=True)
+                context = ""
+            else:
+                print(f"[crm] no-content task cat={category} → None", flush=True)
+                return "None"
 
     # ── Execute chosen strategy with DAAO-selected model ─────────────────────
     answer: str = ""
