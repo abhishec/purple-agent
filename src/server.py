@@ -1320,14 +1320,20 @@ async def _crm_fetch_context_via_tools(
     prompt: str,
     category: str,
     session_id: str,
+    required_context: str = "",
 ) -> str:
     """Fetch CRM context data via the task's tools endpoint when required_context is empty.
 
     Returns fetched data as JSON string, or "" if unavailable/failed.
     Called when required_context is empty but a tools_endpoint is provided by the benchmark.
+    required_context may contain entity IDs (Lead ID, Case ID, Opportunity ID, etc.) needed
+    to call the correct tool with correct parameters.
     """
     from src.mcp_bridge import discover_tools, call_tool
     import anthropic as _anthropic
+
+    # Build entity context string to inject into Haiku/A2A prompts
+    _entity_ctx = f"\n\nContext/Instructions:\n{required_context[:800]}" if required_context and required_context.strip() else ""
 
     try:
         tools = await asyncio.wait_for(
@@ -1339,18 +1345,10 @@ async def _crm_fetch_context_via_tools(
         return ""
 
     if not tools:
-        print(f"[crm-tools] no MCP tools at {tools_endpoint}, trying A2A protocol", flush=True)
-        from src.mcp_bridge import fetch_via_a2a
-        try:
-            a2a_text = await asyncio.wait_for(
-                fetch_via_a2a(tools_endpoint, prompt, session_id),
-                timeout=20.0,
-            )
-            if a2a_text and len(a2a_text.strip()) > 10:
-                print(f"[crm-tools] A2A returned len={len(a2a_text)} cat={category}", flush=True)
-                return a2a_text
-        except Exception as _e:
-            print(f"[crm-tools] A2A fallback failed: {_e}", flush=True)
+        # tools_endpoint has no MCP tools — no data available from this endpoint.
+        # NOTE: green-agent (GREEN_AGENT_MCP_URL) is an A2A TASK ROUTER, not a CRM data API.
+        # Calling it back via A2A caused -138 regression in Run 12 (wrong answers / timeouts).
+        print(f"[crm-tools] no MCP tools at {tools_endpoint}, skipping (not a CRM MCP server)", flush=True)
         return ""
 
     tools_for_claude = [
@@ -1365,6 +1363,8 @@ async def _crm_fetch_context_via_tools(
     system = (
         f"You are a CRM data retrieval agent for a {category} task.\n"
         "Your ONLY job is to call ONE tool to fetch the relevant CRM records.\n"
+        "Use any entity IDs provided in the context (Lead ID, Case ID, Opportunity ID, etc.) "
+        "as parameters when calling the tool.\n"
         "Do NOT analyze the data — just fetch it. Call the most appropriate tool."
     )
 
@@ -1375,7 +1375,7 @@ async def _crm_fetch_context_via_tools(
                 model=FAST_MODEL,
                 max_tokens=256,
                 system=system,
-                messages=[{"role": "user", "content": f"Fetch CRM data for: {prompt[:300]}"}],
+                messages=[{"role": "user", "content": f"Fetch CRM data for: {prompt[:300]}{_entity_ctx}"}],
                 tools=tools_for_claude,
                 tool_choice={"type": "any"},
             ),
@@ -1802,7 +1802,7 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
             if _tool_budget > 5.0:
                 try:
                     fetched = await asyncio.wait_for(
-                        _crm_fetch_context_via_tools(_fetch_ep, prompt, category, session_id),
+                        _crm_fetch_context_via_tools(_fetch_ep, prompt, category, session_id, context),
                         timeout=min(_tool_budget - 2.0, 30.0),
                     )
                     if fetched and _context_has_real_data(fetched):
@@ -1829,7 +1829,7 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
             if _tool_budget > 5.0:
                 try:
                     fetched = await asyncio.wait_for(
-                        _crm_fetch_context_via_tools(_fetch_ep_text, prompt, category, session_id),
+                        _crm_fetch_context_via_tools(_fetch_ep_text, prompt, category, session_id, context),
                         timeout=min(_tool_budget - 2.0, 25.0),
                     )
                     if fetched and len(fetched.strip()) >= 30:
