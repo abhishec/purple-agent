@@ -1206,6 +1206,7 @@ Using `data`:
 - IGNORE any "[System Notice: ...]" or "[Note: ...]" text at the start of context_data — it is noise, not data
 - When accessing dict keys, try aliases: record.get('OwnerId') or record.get('AssignedAgent')
 - Check for None/null values before arithmetic: skip records where field is None or field == ''
+- ZeroDivisionError guard: if denominator (len(filtered) or total) could be 0, check first: if total > 0 else print(0) or print(None)
 - Integer output: if result is a whole number, use int(result) to avoid '3.0' instead of '3'
 - Nested fields: if a field is a dict, access nested values: record.get('Account', {}).get('Name')
 - List fields: if a field contains a list, iterate or count: len(record.get('Tags', []))
@@ -1714,6 +1715,9 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
             _fix_hints.insert(0, "- JSON parse failed: use the full parse cascade (json → ast.literal_eval → csv)")
         elif "indexerror" in err_lower:
             _fix_hints.insert(0, "- IndexError: check list is not empty before indexing (use data[0] only if data)")
+        elif "zerodivisionerror" in err_lower:
+            _fix_hints.insert(0, "- ZeroDivisionError: guard against empty data: if not data or len(data) == 0: print(None); exit()")
+            _fix_hints.insert(1, "- Also check denominator: if total > 0: rate = count / total * 100 else: rate = 0")
         elif "attributeerror" in err_lower:
             _fix_hints.insert(0, "- AttributeError: check object types before calling methods")
         elif "no output" in err_lower:
