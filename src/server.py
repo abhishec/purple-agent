@@ -2669,7 +2669,17 @@ async def a2a_handler(request: Request):
             print(f"[tau2] routing context_id={context_id[:8]} to tau2 handler", flush=True)
             answer = await _handle_tau2_turn(context_id, task_text)
         elif _is_crm_task_format(task_text):
-            print(f"[crm] routing context_id={context_id[:8]} to crm handler tools={'yes' if tools_endpoint else 'no'}", flush=True)
+            # Debug: log ALL metadata keys + task fields to discover hidden data sources
+            _meta_keys = list(metadata.keys()) if metadata else []
+            try:
+                import json as _dbg_json
+                _task_dbg = _dbg_json.loads(task_text)
+                _task_keys = list(_task_dbg.keys())
+                _cat_dbg = _task_dbg.get("task_category", "")
+            except Exception:
+                _task_keys = []
+                _cat_dbg = ""
+            print(f"[crm] routing context_id={context_id[:8]} cat={_cat_dbg} tools={'yes' if tools_endpoint else 'no'} meta_keys={_meta_keys} task_keys={_task_keys}", flush=True)
             answer = await _handle_crm_turn(task_text, session_id=context_id, tools_endpoint=tools_endpoint)
         else:
             answer = await run_worker(
