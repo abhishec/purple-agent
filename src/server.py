@@ -1262,12 +1262,12 @@ _CRM_CATEGORY_HINTS = {
         "Find which month has the highest (or lowest, per question) total/count. "
         "NEVER return a month number — always full name via strftime('%B'). "
         "Date field fallback chain: CreatedDate → CloseDate → Date → ActivityDate → TransactionDate → OrderDate. "
-        "Amount mode (revenue/sales questions): sum Amount or Revenue field. "
-        "Count mode (count/volume questions): count records (add 1 per record). "
-        "Use: monthly = defaultdict(float); "
+        "Choose mode from question: "
+        "  - Revenue/sales/amount questions → SUM mode: monthly[month] += float(r.get('Amount') or r.get('Revenue') or 0). "
+        "  - Count/volume/most-records questions → COUNT mode: monthly[month] += 1. "
+        "Pattern: monthly = defaultdict(float); "
         "for r in data: d = _safe_date(r.get('CreatedDate')) or _safe_date(r.get('CloseDate')) or _safe_date(r.get('Date')) or _safe_date(r.get('ActivityDate')); "
-        "_amt = r.get('Amount') or r.get('Revenue') or r.get('TotalAmount'); "
-        "if d: monthly[d.strftime('%B')] += float(_amt) if _amt is not None else 1. "
+        "if d: monthly[d.strftime('%B')] += <SUM or COUNT per mode above>. "
         "print(max(monthly, key=monthly.get)) if monthly else print(None) — or min() if lowest."
     ),
     "lead_routing": (
