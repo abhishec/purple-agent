@@ -1523,6 +1523,7 @@ _CRM_CATEGORY_HINTS = {
         "  elif any(w in _q for w in ['region','territory','state','country','area']): _gf=next((f for f in ['Region','Territory','BillingState','State','Area','Country'] if data and data[0].get(f)), 'Region'). "
         "  elif any(w in _q for w in ['industry','sector','vertical']): _gf=next((f for f in ['Industry','Sector','Vertical','IndustryType'] if data and data[0].get(f)), 'Industry'). "
         "  elif 'account type' in _q or 'account_type' in _q or 'type of account' in _q: _gf=next((f for f in ['AccountType','Type','AccountCategory'] if data and data[0].get(f)), 'AccountType'). "
+        "  elif any(p in _q for p in ['opportunity type','deal type','case type','order type','record type']): _gf=next((f for f in ['Type','OpportunityType','DealType','CaseType','RecordType','OrderType'] if data and data[0].get(f)), 'Type').  # Bug 091: opportunity/deal/case type branch "
         "  elif any(w in _q for w in ['account','company','customer','client']): _gf=next((f for f in ['AccountName','Account','Company','Customer','ClientName','CompanyName'] if data and data[0].get(f)), 'AccountName'). "
         "  elif any(w in _q for w in ['lead source','leadsource','by source','per source','channel']): _gf=next((f for f in ['LeadSource','Source','Channel','ReferralSource'] if data and data[0].get(f)), 'LeadSource'). "
         "  elif 'stage' in _q: _gf=next((f for f in ['StageName','Stage','Status','OpportunityStage'] if data and data[0].get(f)), 'StageName'). "
