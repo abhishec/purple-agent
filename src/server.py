@@ -1261,16 +1261,18 @@ _CRM_CATEGORY_HINTS = {
         "Group by month, then find max/min."
     ),
     "lead_routing": (
-        "Apply routing rules from the question to the lead record(s). "
-        "Read lead fields (LeadSource, Rating, Region, Product, Score, etc.) from data. "
-        "Match against routing rules stated in the question — output the agent/team name. "
-        "Return exact name string. print(None) if no rule matches."
+        "CRITICAL: The routing RULES come from the question text — parse them in Python as if/elif chains. "
+        "The DATA has the lead fields (LeadSource, Rating, Region, Product, Score, etc.). "
+        "Write Python that: (1) reads rule conditions from the question string (hardcode them as literals), "
+        "(2) reads lead fields from data[0] (or first matching record), (3) applies if/elif to find the team. "
+        "Return exact team/agent name string. print(None) if no rule matches."
     ),
     "case_routing": (
-        "Apply routing rules from the question to the case record(s). "
-        "Read case fields (Priority, Category, Type, Region, Product, Status) from data. "
-        "Match against routing rules stated in the question — output the queue/agent name. "
-        "Return exact name string. print(None) if no rule matches."
+        "CRITICAL: The routing RULES come from the question text — parse them in Python as if/elif chains. "
+        "The DATA has the case fields (Priority, Category, Type, Region, Product, Status, etc.). "
+        "Write Python that: (1) reads rule conditions from the question string (hardcode them as literals), "
+        "(2) reads case fields from data[0] (or first matching record), (3) applies if/elif to find the queue. "
+        "Return exact queue/agent name string. print(None) if no rule matches."
     ),
     "transfer_count": (
         "Count case transfers. "
