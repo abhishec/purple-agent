@@ -1325,15 +1325,26 @@ async def _crm_fetch_context_via_tools(
     """Fetch CRM context data via the task's tools endpoint when required_context is empty.
 
     Returns fetched data as JSON string, or "" if unavailable/failed.
-    Called when required_context is empty but a tools_endpoint is provided by the benchmark.
-    required_context may contain entity IDs (Lead ID, Case ID, Opportunity ID, etc.) needed
-    to call the correct tool with correct parameters.
+    Two strategies:
+    1. Programmatic: extract Salesforce entity IDs from required_context, try direct tool call
+       for each tool with matching id-like parameter (avoids LLM errors on param naming).
+    2. LLM fallback: Haiku selects + calls tool when programmatic attempt fails or no entity ID.
+       Multi-tool retry: if Haiku's tool returns empty, try remaining tools from list.
     """
-    from src.mcp_bridge import discover_tools, call_tool
+    from src.mcp_bridge import discover_tools, call_tool, _is_empty_result
     import anthropic as _anthropic
+    import json as _json_tools
+    import re as _re_id
 
-    # Build entity context string to inject into Haiku/A2A prompts
+    # Build entity context string to inject into Haiku prompts
     _entity_ctx = f"\n\nContext/Instructions:\n{required_context[:800]}" if required_context and required_context.strip() else ""
+
+    # ── Strategy 0: Extract Salesforce entity IDs programmatically ─────────────
+    # Salesforce IDs are 15 or 18 alphanumeric chars starting with a 3-char prefix.
+    # Examples: 00QWs00000GLFE9MAP (lead), 500Ws00000Mj2iZIAR (case), 006Ws00000ALnXMIA1 (opp)
+    _entity_ids = _re_id.findall(r'\b[0-9A-Za-z]{15,18}\b', required_context)
+    # Filter: Salesforce IDs start with digits/uppercase and are 15 or 18 chars
+    _sf_ids = [i for i in _entity_ids if len(i) in (15, 18) and _re_id.match(r'^[0-9][0-9A-Za-z]{14,17}$', i)]
 
     try:
         tools = await asyncio.wait_for(
@@ -1351,6 +1362,41 @@ async def _crm_fetch_context_via_tools(
         print(f"[crm-tools] no MCP tools at {tools_endpoint}, skipping (not a CRM MCP server)", flush=True)
         return ""
 
+    async def _try_tool(tool_name: str, params: dict) -> str:
+        """Call tool and return JSON string, or "" if empty/error."""
+        try:
+            result = await asyncio.wait_for(
+                call_tool(tools_endpoint, tool_name, params, session_id, tools),
+                timeout=10.0,
+            )
+            if _is_empty_result(result):
+                return ""
+            ctx = _json_tools.dumps(result) if isinstance(result, (dict, list)) else str(result)
+            if len(ctx) > 5:
+                print(f"[crm-tools] tool={tool_name} params={list(params.keys())} len={len(ctx)}", flush=True)
+                return ctx
+        except Exception as _e:
+            print(f"[crm-tools] call_tool {tool_name} failed: {_e}", flush=True)
+        return ""
+
+    # ── Strategy 1: Programmatic entity ID → direct tool call ──────────────────
+    if _sf_ids:
+        entity_id = _sf_ids[0]
+        # Common Salesforce ID parameter names in MCP tools
+        _id_param_names = ["id", "record_id", "lead_id", "case_id", "opportunity_id",
+                           "contact_id", "account_id", "quote_id", "salesforce_id", "sf_id"]
+        for t in tools:
+            schema = t.get("input_schema", {})
+            props = schema.get("properties", {})
+            for param_name in _id_param_names:
+                if param_name in props:
+                    ctx = await _try_tool(t["name"], {param_name: entity_id})
+                    if ctx:
+                        print(f"[crm-tools] programmatic entity_id={entity_id[:8]}… tool={t['name']} len={len(ctx)}", flush=True)
+                        return ctx
+                    break  # tried this tool's best param, move to next tool
+
+    # ── Strategy 2: Haiku selects tool + multi-tool retry ─────────────────────
     tools_for_claude = [
         {
             "name": t["name"],
@@ -1385,22 +1431,28 @@ async def _crm_fetch_context_via_tools(
         print(f"[crm-tools] claude tool-select failed: {_e}", flush=True)
         return ""
 
-    import json as _json_tools
+    _tried_tools: set[str] = set()
     for block in resp.content:
         if hasattr(block, "type") and block.type == "tool_use":
-            try:
-                result = await asyncio.wait_for(
-                    call_tool(tools_endpoint, block.name, block.input or {}, session_id, tools),
-                    timeout=10.0,
-                )
-                ctx = _json_tools.dumps(result) if isinstance(result, (dict, list)) else str(result)
-                print(f"[crm-tools] fetched cat={category} tool={block.name} len={len(ctx)}", flush=True)
+            _tried_tools.add(block.name)
+            ctx = await _try_tool(block.name, block.input or {})
+            if ctx:
+                print(f"[crm-tools] haiku-selected cat={category} tool={block.name} len={len(ctx)}", flush=True)
                 return ctx
-            except Exception as _e:
-                print(f"[crm-tools] call_tool failed: {_e}", flush=True)
-                return ""
+            # Haiku's pick was empty — fall through to retry with other tools
+            print(f"[crm-tools] haiku tool={block.name} returned empty, trying others", flush=True)
 
-    print("[crm-tools] no tool_use block in claude response", flush=True)
+    # ── Retry with remaining tools (broad search) ──────────────────────────────
+    for t in tools:
+        if t["name"] in _tried_tools:
+            continue
+        # Call with no params (listing/search tools that return all records)
+        ctx = await _try_tool(t["name"], {})
+        if ctx:
+            print(f"[crm-tools] fallback-tool={t['name']} len={len(ctx)} cat={category}", flush=True)
+            return ctx
+
+    print("[crm-tools] all tools returned empty/failed", flush=True)
     return ""
 
 
