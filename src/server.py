@@ -1284,10 +1284,11 @@ _CRM_CATEGORY_HINTS = {
     "monthly_trend_analysis": (
         "Find which month has the highest (or lowest, per question) total/count. "
         "NEVER return a month number — always full name via strftime('%B'). "
-        "Date field fallback chain: CreatedDate → CloseDate → Date → ActivityDate → TransactionDate → OrderDate. "
         "_q = prompt_text.lower(). "
         "Extract year filter from prompt: _yr_m=re.search(r'\\b(20\\d{2})\\b', prompt_text); _yr=int(_yr_m.group(1)) if _yr_m else None. "
-        "_df = lambda r: _safe_date(r.get('CreatedDate') or r.get('CloseDate') or r.get('Date') or r.get('ActivityDate') or r.get('TransactionDate') or r.get('OrderDate')). "
+        "Select date field: use CloseDate-first for 'closed/won/lost/completed/resolved' questions; CreatedDate-first for all others: "
+        "_use_close_dt = any(w in _q for w in ['closed','close','won','lost','completed','resolved']). "
+        "_df = (lambda r: _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('CompletedDate') or r.get('ResolvedDate') or r.get('WonDate') or r.get('CreatedDate'))) if _use_close_dt else (lambda r: _safe_date(r.get('CreatedDate') or r.get('Date') or r.get('ActivityDate') or r.get('TransactionDate') or r.get('OrderDate') or r.get('CloseDate'))). "
         "rows = [r for r in data if _df(r) and _df(r).year==_yr] if _yr else list(data). "
         "if any(w in _q for w in ['revenue','sales','amount','value','total']):  # SUM mode "
         "  _af = next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','Value'] if data and data[0].get(f) is not None), 'Amount'). "
@@ -1300,7 +1301,7 @@ _CRM_CATEGORY_HINTS = {
         "  for r in rows: "
         "    d=_df(r). "
         "    if d: monthly[d.strftime('%B')] += 1. "
-        "print(min(monthly, key=monthly.get) if monthly else None) if any(w in _q for w in ['lowest','minimum','fewest','least']) else print(max(monthly, key=monthly.get) if monthly else None)."
+        "print(min(monthly, key=monthly.get) if monthly else None) if any(w in _q for w in ['lowest','minimum','fewest','least','worst','min','smallest','bottom']) else print(max(monthly, key=monthly.get) if monthly else None)."
     ),
     "lead_routing": (
         "CRITICAL: The routing RULES come from the question text — implement them as if/elif in Python. "
@@ -1533,7 +1534,7 @@ _CRM_CATEGORY_HINTS = {
         "  elif 'subject' in _q: _f = next((f for f in ['Subject','Title'] if data and data[0].get(f)), None). "
         "  else: _f = max(['Type','Category','CaseType','IssueType','Reason'], key=lambda f: sum(1 for r in rows if r.get(f)), default='Type'). "
         "Step 2 — count and return (min or max per question): "
-        "_is_min_ti = any(w in _q for w in ['lowest','least','fewest','minimum','rarest']). "
+        "_is_min_ti = any(w in _q for w in ['lowest','least','fewest','minimum','rarest','worst','min']). "
         "c = Counter(r.get(_f) for r in rows if r.get(_f)) if _f else Counter(). "
         "print(c.most_common()[-1][0] if c else None) if _is_min_ti else print(c.most_common(1)[0][0] if c else None)."
     ),
