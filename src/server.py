@@ -1341,6 +1341,9 @@ _CRM_CATEGORY_HINTS = {
     "sales_amount_understanding": (
         "Aggregate the amount field specified or implied in the question. "
         "_af = next((f for f in ['Amount','TotalAmount','Revenue','ARR','MRR','SalesAmount','DealValue','Price','Value'] if data and data[0].get(f) is not None), 'Amount'). "
+        "If question specifies a date period: define today+cutoff first: "
+        "  _td=re.search(r'(?:today|current).{0,30}(\\d{4}-\\d{2}-\\d{2})', context_data or '', re.I); today=_safe_date(_td.group(1)) if _td else dt.now(). "
+        "  cutoff = today - timedelta(days=90)  # 'last 3 months' example; adjust to question. "
         "Filter records per the question (choose ONE, adapt as needed): "
         "  filtered = [r for r in data if r.get('StageName') == 'Closed Won']  # stage filter. "
         "  filtered = [r for r in data if _safe_date(r.get('CloseDate')) and _safe_date(r.get('CloseDate')) >= cutoff]  # date filter. "
