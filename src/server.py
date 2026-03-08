@@ -1282,6 +1282,15 @@ CRITICAL output rules — violating these = wrong answer:
 - If data records are empty or question asks to find/identify something that doesn't exist: print exactly None
 - IMPORTANT: `data` is pre-normalized. Do NOT print context_data or data directly — only print the computed answer.
 
+Field name detection (CRITICAL — applies to every category):
+- NEVER use data[0].get(f) to detect which field exists — first record may have None even if all others have a value
+- ALWAYS check multiple records when picking field names from a candidate list:
+  _af = next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','ARR','MRR','Value'] if any(r.get(f) is not None for r in data[:5])), 'Amount')
+  _gf = next((f for f in ['Region','State','Territory','BillingState'] if any(r.get(f) for r in data[:5])), 'Region')
+- For numeric/amount fields: use `any(r.get(f) is not None for r in data[:5])` — 0 is valid, only None means absent
+- For categorical/string fields: use `any(r.get(f) for r in data[:5])` — skip None AND empty string
+- This same pattern applies to ALL field selections: date fields, owner fields, status fields, etc.
+
 Always wrap code in ```python\\n...\\n``` fences."""
 
 
@@ -1298,7 +1307,7 @@ _CRM_CATEGORY_HINTS = {
         "_df = (lambda r: _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('CompletedDate') or r.get('ResolvedDate') or r.get('WonDate') or r.get('CreatedDate'))) if _use_close_dt else (lambda r: _safe_date(r.get('CreatedDate') or r.get('Date') or r.get('ActivityDate') or r.get('TransactionDate') or r.get('OrderDate') or r.get('CloseDate'))). "
         "rows = [r for r in data if _df(r) and _df(r).year==_yr] if _yr else list(data). "
         "if _is_sum_mode:  # SUM mode — group revenue/amount by close month "
-        "  _af = next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','ARR','MRR','Value'] if data and data[0].get(f) is not None), 'Amount'). "
+        "  _af = next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','ARR','MRR','Value'] if any(r.get(f) is not None for r in data[:5])), 'Amount').  # Bug 092: check data[:5] not just data[0] — first record may have None "
         "  monthly = defaultdict(float). "
         "  for r in rows: "
         "    d=_df(r); v=r.get(_af) if d else None. "
@@ -1354,7 +1363,7 @@ _CRM_CATEGORY_HINTS = {
     "sales_amount_understanding": (
         "Aggregate the amount field specified or implied in the question. "
         "_q = prompt_text.lower(). "  # define _q first — used for both filter and mode selection
-        "_af = next((f for f in ['Amount','TotalAmount','Revenue','ARR','MRR','SalesAmount','DealValue','Price','Value'] if data and data[0].get(f) is not None), 'Amount'). "
+        "_af = next((f for f in ['Amount','TotalAmount','Revenue','ARR','MRR','SalesAmount','DealValue','Price','Value'] if any(r.get(f) is not None for r in data[:5])), 'Amount').  # Bug 092: check data[:5] "
         "cutoff = None.  # initialize before conditional block — prevents NameError in elif cutoff: "
         "If question specifies a relative date period ('last N months', 'past N weeks', 'last quarter'): "
         "  _td=re.search(r'(?:today|current).{0,30}(\\d{4}-\\d{2}-\\d{2})', (context_data or '')+(prompt_text or ''), re.I); today=_safe_date(_td.group(1)) if _td else dt.now(). "
@@ -1436,10 +1445,10 @@ _CRM_CATEGORY_HINTS = {
         "  rows=list(data). "
         "  if _stage: rows=[r for r in rows if (r.get('StageName') or r.get('Stage') or r.get('OpportunityStage') or '').lower()==_stage.lower()]. "
         "  if _yr: rows=[r for r in rows if _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')) and _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')).year==_yr]. "
-        "_rf=next((f for f in ['Region','State','Territory','BillingState','BillingCountry','Country'] if data and data[0].get(f)), 'Region'). "
+        "_rf=next((f for f in ['Region','State','Territory','BillingState','BillingCountry','Country'] if any(r.get(f) for r in data[:5])), 'Region').  # Bug 092: check data[:5] "
         "_is_lowest = any(w in _q for w in ['lowest','least','worst','minimum','fewest','bottom','smallest','min']). "
         "if any(w in _q for w in ['revenue','amount','value','arr','mrr']) or any(p in _q for p in ['total sales','sales revenue','sales amount','sales value','best performance']):  # AMOUNT mode — 'sales' alone excluded (avoids COUNT false-positive) "
-        "  _af=next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','ARR','MRR','Value'] if data and data[0].get(f) is not None), 'Amount').  # Bug 077: add ARR/MRR "
+        "  _af=next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','ARR','MRR','Value'] if any(r.get(f) is not None for r in data[:5])), 'Amount').  # Bug 092: check data[:5] "
         "  grouped=defaultdict(float). "
         "  for r in rows: "
         "    k=r.get(_rf); v=r.get(_af). "
@@ -1525,18 +1534,18 @@ _CRM_CATEGORY_HINTS = {
         "  if _stage: rows=[r for r in rows if (r.get('StageName') or r.get('Stage') or r.get('OpportunityStage') or '').lower()==_stage.lower()]. "
         "  if _yr: rows=[r for r in rows if _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')) and _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')).year==_yr]. "
         "Step 2 — groupby field from prompt_text: "
-        "  if any(w in _q for w in ['product','item','sku']): _gf=next((f for f in ['ProductName','Product','Item','SKU','ProductFamily'] if data and data[0].get(f)), 'ProductName'). "
-        "  elif any(w in _q for w in ['region','territory','state','country','area']): _gf=next((f for f in ['Region','Territory','BillingState','State','Area','Country'] if data and data[0].get(f)), 'Region'). "
-        "  elif any(w in _q for w in ['industry','sector','vertical']): _gf=next((f for f in ['Industry','Sector','Vertical','IndustryType'] if data and data[0].get(f)), 'Industry'). "
-        "  elif 'account type' in _q or 'account_type' in _q or 'type of account' in _q: _gf=next((f for f in ['AccountType','Type','AccountCategory'] if data and data[0].get(f)), 'AccountType'). "
-        "  elif any(p in _q for p in ['opportunity type','deal type','case type','order type','record type']): _gf=next((f for f in ['Type','OpportunityType','DealType','CaseType','RecordType','OrderType'] if data and data[0].get(f)), 'Type').  # Bug 091: opportunity/deal/case type branch "
-        "  elif any(w in _q for w in ['account','company','customer','client']): _gf=next((f for f in ['AccountName','Account','Company','Customer','ClientName','CompanyName'] if data and data[0].get(f)), 'AccountName'). "
-        "  elif any(w in _q for w in ['lead source','leadsource','by source','per source','channel']): _gf=next((f for f in ['LeadSource','Source','Channel','ReferralSource'] if data and data[0].get(f)), 'LeadSource'). "
-        "  elif 'stage' in _q: _gf=next((f for f in ['StageName','Stage','Status','OpportunityStage'] if data and data[0].get(f)), 'StageName'). "
-        "  else: _gf=next((f for f in ['OwnerName','Owner','SalesRep','AgentName','AssignedTo','OwnerId'] if data and data[0].get(f)), 'OwnerId'). "
+        "  if any(w in _q for w in ['product','item','sku']): _gf=next((f for f in ['ProductName','Product','Item','SKU','ProductFamily'] if any(r.get(f) for r in data[:5])), 'ProductName').  # Bug 092: data[:5] "
+        "  elif any(w in _q for w in ['region','territory','state','country','area']): _gf=next((f for f in ['Region','Territory','BillingState','State','Area','Country'] if any(r.get(f) for r in data[:5])), 'Region'). "
+        "  elif any(w in _q for w in ['industry','sector','vertical']): _gf=next((f for f in ['Industry','Sector','Vertical','IndustryType'] if any(r.get(f) for r in data[:5])), 'Industry'). "
+        "  elif 'account type' in _q or 'account_type' in _q or 'type of account' in _q: _gf=next((f for f in ['AccountType','Type','AccountCategory'] if any(r.get(f) for r in data[:5])), 'AccountType'). "
+        "  elif any(p in _q for p in ['opportunity type','deal type','case type','order type','record type']): _gf=next((f for f in ['Type','OpportunityType','DealType','CaseType','RecordType','OrderType'] if any(r.get(f) for r in data[:5])), 'Type'). "
+        "  elif any(w in _q for w in ['account','company','customer','client']): _gf=next((f for f in ['AccountName','Account','Company','Customer','ClientName','CompanyName'] if any(r.get(f) for r in data[:5])), 'AccountName'). "
+        "  elif any(w in _q for w in ['lead source','leadsource','by source','per source','channel']): _gf=next((f for f in ['LeadSource','Source','Channel','ReferralSource'] if any(r.get(f) for r in data[:5])), 'LeadSource'). "
+        "  elif 'stage' in _q: _gf=next((f for f in ['StageName','Stage','Status','OpportunityStage'] if any(r.get(f) for r in data[:5])), 'StageName'). "
+        "  else: _gf=next((f for f in ['OwnerName','Owner','SalesRep','AgentName','AssignedTo','OwnerId'] if any(r.get(f) for r in data[:5])), 'OwnerId'). "
         "Step 3 — aggregate: "
         "  if any(w in _q for w in ['revenue','amount','value','arr','mrr']) or any(p in _q for p in ['total revenue','total amount','total sales','total value','sales amount','deal value']):  # financial aggregation — 'sales'/'total' alone excluded to avoid COUNT false-positive "
-        "    _af=next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','ARR','MRR','Value'] if data and data[0].get(f) is not None), 'Amount'). "
+        "    _af=next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','ARR','MRR','Value'] if any(r.get(f) is not None for r in data[:5])), 'Amount').  # Bug 092: data[:5] "
         "    groups=defaultdict(float). "
         "    for r in rows: "
         "      k=r.get(_gf); v=r.get(_af). "
