@@ -2011,6 +2011,11 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
             _fix_hints.insert(1, "- Add: if record.get('Field') is None: continue")
         elif "valueerror" in err_lower and "strptime" in err_lower:
             _fix_hints.insert(0, "- Date parse error: use _safe_date(d) instead of strptime — handles all formats")
+        elif "valueerror" in err_lower and ("float" in err_lower or "convert" in err_lower or "invalid literal" in err_lower):
+            _fix_hints.insert(0, "- ValueError: numeric field may be 'N/A', empty, or comma-formatted ('1,234.56') — use _safe_num(val) instead of float(val)")
+            _fix_hints.insert(1, "- Filter: if val not in (None,'','N/A','n/a'): grouped[k] += _safe_num(val)")
+        elif "valueerror" in err_lower:
+            _fix_hints.insert(0, "- ValueError: use _safe_num(val) for numeric conversion, _safe_date(d) for dates — handles all null/invalid variants")
         elif "json" in err_lower and "decode" in err_lower:
             _fix_hints.insert(0, "- JSON parse failed: use the full parse cascade (json → ast.literal_eval → csv)")
         elif "indexerror" in err_lower:
