@@ -1747,51 +1747,102 @@ async def _crm_fetch_context_via_tools(
                         return ctx
                     break  # tried this tool's best param, move to next tool
 
-    # ── Strategy 2: Haiku selects tool + multi-tool retry ─────────────────────
-    tools_for_claude = [
-        {
-            "name": t["name"],
-            "description": t.get("description", ""),
-            "input_schema": t.get("input_schema", {"type": "object", "properties": {}}),
-        }
+    # ── Strategy 2: LLM selects tool via text prompt → JSON ──────────────────
+    # Routes through BrainOS cost layer (prescreen → local LLM → Haiku fallback).
+    # Tool-use API not needed — we ask for JSON output and parse it.
+    _tool_list_text = "\n".join(
+        f"- {t['name']}: {t.get('description', '')}"
         for t in tools
-    ]
-
-    system = (
-        f"You are a CRM data retrieval agent for a {category} task.\n"
-        "Your ONLY job is to call ONE tool to fetch the relevant CRM records.\n"
-        "Use any entity IDs provided in the context (Lead ID, Case ID, Opportunity ID, etc.) "
-        "as parameters when calling the tool.\n"
-        "Do NOT analyze the data — just fetch it. Call the most appropriate tool."
     )
+    _tool_select_system = (
+        f"You are a CRM data retrieval selector for a {category} task.\n"
+        "Choose ONE tool from the list and return ONLY valid JSON — no explanation:\n"
+        '{"tool": "<tool_name>", "params": {<param_key>: <param_value>}}\n\n'
+        f"Available tools:\n{_tool_list_text}"
+    )
+    _tool_select_msg = f"Fetch CRM data for: {prompt[:300]}{_entity_ctx}"
 
-    client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-    try:
-        resp = await asyncio.wait_for(
-            client.messages.create(
-                model=FAST_MODEL,
-                max_tokens=256,
-                system=system,
-                messages=[{"role": "user", "content": f"Fetch CRM data for: {prompt[:300]}{_entity_ctx}"}],
-                tools=tools_for_claude,
-                tool_choice={"type": "any"},
-            ),
-            timeout=12.0,
+    _tool_name_selected: str | None = None
+    _tool_params_selected: dict = {}
+
+    # Primary: BrainOS cost layer
+    if BRAINOS_API_KEY and BRAINOS_ORG_ID:
+        from src.brainos_client import run_code_gen_task as _run_tool_sel, BrainOSUnavailableError as _BrainOSErrTS
+        try:
+            _ts_raw = await asyncio.wait_for(
+                _run_tool_sel(
+                    message=_tool_select_msg,
+                    system_context=_tool_select_system,
+                    category=f"tool_select_{category}",
+                    session_id=session_id or f"ts_{abs(hash(prompt))}",
+                    timeout=10.0,
+                    model=FAST_MODEL,
+                    max_tokens=128,
+                    temperature=0.0,
+                ),
+                timeout=12.0,
+            )
+            if _ts_raw:
+                import json as _json_ts
+                import re as _re_ts
+                _json_match = _re_ts.search(r'\{[^}]+\}', _ts_raw, _re_ts.DOTALL)
+                if _json_match:
+                    _ts_parsed = _json_ts.loads(_json_match.group())
+                    _tool_name_selected = _ts_parsed.get("tool")
+                    _tool_params_selected = _ts_parsed.get("params") or {}
+        except (_BrainOSErrTS, asyncio.TimeoutError):
+            pass  # fall through to direct Anthropic
+        except Exception as _tse:
+            print(f"[crm-tools] brainos tool-select error: {_tse}", flush=True)
+
+    # Fallback: direct Anthropic with native tool_use (if BrainOS unavailable or failed)
+    if not _tool_name_selected:
+        tools_for_claude = [
+            {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "input_schema": t.get("input_schema", {"type": "object", "properties": {}}),
+            }
+            for t in tools
+        ]
+        _direct_system = (
+            f"You are a CRM data retrieval agent for a {category} task.\n"
+            "Your ONLY job is to call ONE tool to fetch the relevant CRM records.\n"
+            "Use any entity IDs provided in the context (Lead ID, Case ID, Opportunity ID, etc.) "
+            "as parameters when calling the tool.\n"
+            "Do NOT analyze the data — just fetch it. Call the most appropriate tool."
         )
-    except Exception as _e:
-        print(f"[crm-tools] claude tool-select failed: {_e}", flush=True)
-        return ""
+        try:
+            import anthropic as _anthropic
+            _client_ts = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+            _resp_ts = await asyncio.wait_for(
+                _client_ts.messages.create(
+                    model=FAST_MODEL,
+                    max_tokens=256,
+                    system=_direct_system,
+                    messages=[{"role": "user", "content": f"Fetch CRM data for: {prompt[:300]}{_entity_ctx}"}],
+                    tools=tools_for_claude,
+                    tool_choice={"type": "any"},
+                ),
+                timeout=12.0,
+            )
+            for block in _resp_ts.content:
+                if hasattr(block, "type") and block.type == "tool_use":
+                    _tool_name_selected = block.name
+                    _tool_params_selected = block.input or {}
+                    break
+        except Exception as _e:
+            print(f"[crm-tools] tool-select failed: {_e}", flush=True)
+            return ""
 
     _tried_tools: set[str] = set()
-    for block in resp.content:
-        if hasattr(block, "type") and block.type == "tool_use":
-            _tried_tools.add(block.name)
-            ctx = await _try_tool(block.name, block.input or {})
-            if ctx:
-                print(f"[crm-tools] haiku-selected cat={category} tool={block.name} len={len(ctx)}", flush=True)
-                return ctx
-            # Haiku's pick was empty — fall through to retry with other tools
-            print(f"[crm-tools] haiku tool={block.name} returned empty, trying others", flush=True)
+    if _tool_name_selected:
+        _tried_tools.add(_tool_name_selected)
+        ctx = await _try_tool(_tool_name_selected, _tool_params_selected)
+        if ctx:
+            print(f"[crm-tools] selected cat={category} tool={_tool_name_selected} len={len(ctx)}", flush=True)
+            return ctx
+        print(f"[crm-tools] tool={_tool_name_selected} returned empty, trying others", flush=True)
 
     # ── Retry with remaining tools (broad search) ──────────────────────────────
     for t in tools:
@@ -2231,9 +2282,40 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     max_tok = 512 if is_text_qa else (64 if is_analytical else 128)
     # Low temperature for precise value extraction; slightly higher for text reasoning
     temperature = 0.3 if is_text_qa else 0.1
+    llm_timeout = min(timeout, 25.0)
+
+    # ── Primary path: route through BrainOS cost layer ───────────────────────
+    # BrainOS prescreen → local LLM (free) or Haiku/Sonnet (bandit-gated).
+    # All cost tracking, daily budget, and training capture happen inside BrainOS.
+    if BRAINOS_API_KEY and BRAINOS_ORG_ID:
+        from src.brainos_client import run_code_gen_task as _run_llm, BrainOSUnavailableError as _BrainOSErr
+        _brainos_timeout = min(llm_timeout, 22.0)
+        try:
+            _b_answer = await asyncio.wait_for(
+                _run_llm(
+                    message=user_msg,
+                    system_context=system_prompt,
+                    category=category,
+                    session_id=session_id or f"llm_{abs(hash(prompt + category))}",
+                    timeout=_brainos_timeout,
+                    model=resolved_model,
+                    max_tokens=max_tok,
+                    temperature=temperature,
+                ),
+                timeout=_brainos_timeout + 2.0,
+            )
+            if _b_answer and not _b_answer.startswith("<!"):
+                print(f"[crm-llm] brainos cat={category} model={resolved_model} len={len(_b_answer)}", flush=True)
+                return _b_answer
+            print(f"[crm-llm] brainos empty/refusal cat={category}, using direct fallback", flush=True)
+        except (_BrainOSErr, asyncio.TimeoutError) as _be:
+            print(f"[crm-llm] brainos unavailable cat={category}: {_be}, using direct fallback", flush=True)
+        except Exception as _be:
+            print(f"[crm-llm] brainos error cat={category}: {_be}, using direct fallback", flush=True)
+
+    # ── Fallback: direct Anthropic call (used only if BrainOS unavailable) ───
+    import anthropic as _anthropic
     client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-    # Dynamic timeout: caller can pass remaining task budget to stay within 60s limit
-    llm_timeout = min(timeout, 25.0)  # cap at 25s even if caller gives more
     try:
         resp = await asyncio.wait_for(
             client.messages.create(

@@ -167,6 +167,7 @@ async def brainos_analytical_fallback(
         "preScreenConfidence": 0.50,  # very low — accept local LLM answer even if uncertain
         "banditEnabled": True,
         "banditCategory": f"crm_moa_{category}",  # separate bandit arm from primary path
+        "forceCopilot": True,         # bypass autonomous pipeline router — CRM data embedded in message
     }
 
     async def _noop(name: str, params: dict) -> dict:
@@ -195,6 +196,68 @@ async def brainos_analytical_fallback(
         return None
     except Exception as e:
         print(f"[brainos-moa] error cat={category}: {e}", flush=True)
+        return None
+
+
+async def run_code_gen_task(
+    message: str,
+    system_context: str,
+    category: str,
+    session_id: str,
+    timeout: float = 22.0,
+    model: str = "claude-haiku-4-5-20251001",
+    max_tokens: int = 1500,
+    temperature: float = 0.2,
+) -> str | None:
+    """
+    Route a CRM LLM call through BrainOS copilot/chat (M2M fast path).
+
+    BrainOS routes to local LLM (free) or the specified model (bandit-gated).
+    The caller passes the pre-built system prompt and user message.
+    BrainOS selects the cheapest model that can handle it.
+
+    Returns the raw LLM text response. None if BrainOS unavailable or empty.
+    """
+    if not BRAINOS_API_KEY or not BRAINOS_ORG_ID:
+        return None
+
+    eval_hints = {
+        "model": model,
+        "maxTokens": max_tokens,
+        "temperature": temperature,
+        "preScreenEnabled": True,
+        "preScreenConfidence": 0.55,
+        "banditEnabled": True,
+        "banditCategory": f"crm_codegen_{category}",
+        "forceCopilot": True,   # bypass autonomous pipeline router — CRM data embedded in message
+    }
+
+    async def _noop(name: str, params: dict) -> dict:
+        return {"error": "no tools"}
+
+    try:
+        answer = await asyncio.wait_for(
+            run_task(
+                message=message,
+                system_context=system_context,
+                on_tool_call=_noop,
+                session_id=f"codegen_{session_id}",
+                eval_hints=eval_hints,
+                timeout=timeout,
+                research_mode=False,
+            ),
+            timeout=timeout + 2.0,
+        )
+        if not answer or len(answer.strip()) < 1:
+            return None
+        if answer.strip().startswith("<!"):
+            return None
+        return answer.strip()
+    except (BrainOSUnavailableError, asyncio.TimeoutError) as e:
+        print(f"[brainos-codegen] unavailable cat={category}: {e}", flush=True)
+        return None
+    except Exception as e:
+        print(f"[brainos-codegen] error cat={category}: {e}", flush=True)
         return None
 
 
@@ -235,6 +298,7 @@ async def run_crm_task(
         "preScreenConfidence": 0.60,             # lower threshold — accept local LLM at 60%
         "banditEnabled": True,
         "banditCategory": f"crm_{category}",
+        "forceCopilot": True,                    # bypass autonomous pipeline router — CRM data embedded in message
         "evalPipeline": {
             "name": "crmarena_v2_brainos",
             "localLLMFirst": True,               # hint: try local LLM before Claude
