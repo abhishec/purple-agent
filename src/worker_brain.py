@@ -736,6 +736,31 @@ class MiniAIWorker:
 
         add_turn(self.session_id, "user", task_text)
 
+        # ── BrainOS no-tools fast path ─────────────────────────────────────────
+        # When no MCP tools are available at the tools endpoint, BrainOS research
+        # mode is far more powerful than raw Claude: it has web search, federated
+        # knowledge, ReAct loops, and five-phase synthesis. Route directly to it.
+        from src.config import BRAINOS_API_KEY as _BKEY, BRAINOS_ORG_ID as _BORG
+        if not self._tools and _BKEY and _BORG:
+            try:
+                from src.brainos_client import run_task as _brainos_run, BrainOSUnavailableError as _BErr
+                async def _noop_tool(n, p): return {}
+                _brainos_ans = await asyncio.wait_for(
+                    _brainos_run(
+                        message=task_text,
+                        system_context=system_context,
+                        on_tool_call=_noop_tool,
+                        session_id=self.session_id,
+                        research_mode=True,
+                    ),
+                    timeout=90.0,
+                )
+                if _brainos_ans and len(_brainos_ans.strip()) > 30:
+                    print(f"[worker] brainos research path (no tools) ans={_brainos_ans[:80]!r}", flush=True)
+                    return _brainos_ans, 0, None
+            except (_BErr, asyncio.TimeoutError, Exception) as _be:
+                print(f"[worker] brainos no-tools path failed: {_be} → local fallback", flush=True)
+
         # Primary execution always Sonnet unless budget >80% (Haiku can't handle complex tasks)
         _exec_model = self.budget.get_model(fsm.current_state.value, task_text)
         model = _exec_model if self.budget.pct >= 0.80 else MODELS["sonnet"]
@@ -1279,6 +1304,42 @@ class MiniAIWorker:
                     answer = moa_answer
             except Exception:
                 pass  # MoA is best-effort — never fail the task for it
+
+        # ── BrainOS quality synthesis: last-chance improvement via full BrainOS stack ──
+        # Fires when initial quality is poor (< 0.50) AND no mutations were made.
+        # BrainOS has: DeepSeek-R1 reasoning, federated knowledge, five-phase pipeline.
+        # This bridges the gap between the purple agent's local execution and BrainOS's
+        # full research + synthesis capabilities.
+        # Skip if mutations were made (BrainOS can't undo committed actions).
+        if (answer and not error
+                and _initial_quality < 0.50
+                and verifier.mutation_count == 0
+                and not _is_bracket_format((answer or "").strip())
+                and _BKEY and _BORG):
+            try:
+                from src.brainos_client import run_task as _brun, BrainOSUnavailableError as _BErr2
+                _bsyn_prompt = (
+                    f"Task: {task_text}\n\n"
+                    f"Previous analysis (needs improvement):\n{answer[:1000]}\n\n"
+                    f"Process type: {fsm.process_type}\n"
+                    f"Provide a complete, accurate response using your full capabilities."
+                )
+                async def _noop_tool2(n, p): return {}
+                _bsyn_ans = await asyncio.wait_for(
+                    _brun(
+                        message=_bsyn_prompt,
+                        system_context=system_context,
+                        on_tool_call=_noop_tool2,
+                        session_id=self.session_id + "_syn",
+                        research_mode=False,
+                    ),
+                    timeout=30.0,
+                )
+                if _bsyn_ans and len(_bsyn_ans) > len(answer) * 0.7 and '?' not in _bsyn_ans[-100:]:
+                    print(f"[worker] brainos synthesis improved quality ans={_bsyn_ans[:80]!r}", flush=True)
+                    answer = _bsyn_ans
+            except (_BErr2, asyncio.TimeoutError, Exception) as _bse:
+                print(f"[worker] brainos synthesis skip: {_bse}", flush=True)
 
         # Append mutation verification log LAST — after all answer processing.
         # This ensures MoA, COMPUTE correction, and reflection passes cannot discard it.

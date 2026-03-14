@@ -2411,9 +2411,10 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
     except Exception:
         task = {"prompt": task_text, "required_context": "", "persona": "CRM agent", "task_category": ""}
 
-    prompt = task.get("prompt", task_text)
+    # CRMArenaPro dataset uses "task_query"; legacy tasks use "prompt"
+    prompt = task.get("prompt") or task.get("task_query", task_text)
     # required_context may be a string or a parsed JSON object — normalize to string
-    _raw_ctx = task.get("required_context", "")
+    _raw_ctx = task.get("required_context", "") or task.get("context", "") or task.get("crm_context", "")
     if isinstance(_raw_ctx, (list, dict)):
         context = _json.dumps(_raw_ctx)
     else:
@@ -2423,6 +2424,11 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
     # Inherit tools_endpoint from task JSON if not passed by caller
     if not tools_endpoint:
         tools_endpoint = task.get("tools_endpoint", "")
+
+    # Broad context flag: True for ANY non-trivial text (including plain-text conversation
+    # logs, activity history, key-value CRM fields). Used by entity-specific categories
+    # where _context_has_real_data() (JSON-only heuristic) would falsely say "no data".
+    _has_any_context = bool(context and len(context.strip()) > 20)
 
     # ── DAAO: select model BEFORE any LLM call (zero LLM cost) ──────────────
     if _crm_daao is not None:
@@ -2474,7 +2480,14 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
     #      Run 12 regression lesson: do NOT ask for "raw JSON records" — ask the question
     #      directly (direct_query=True) and treat the short text response as the answer.
     # If no data and no oracle answer → expected answer is "None" → return "None".
-    if category in _CRM_ANALYTICAL_CATEGORIES and not _context_has_real_data(context):
+    # Entity-specific categories (lead_qualification, wrong_stage_rectification, etc.)
+    # accept plain-text context (conversation logs, activity transcripts, CRM key-value fields).
+    # _context_has_real_data() is JSON-only; use _has_any_context for these tasks.
+    _entity_specific_with_ctx = (
+        category in _CRM_ENTITY_SPECIFIC_CATEGORIES and _has_any_context
+    )
+
+    if category in _CRM_ANALYTICAL_CATEGORIES and not _context_has_real_data(context) and not _entity_specific_with_ctx:
         _elapsed_pre = time.monotonic() - _task_start
         _tool_budget = max(55.0 - _elapsed_pre, 5.0)
 
@@ -2486,8 +2499,9 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                     _crm_fetch_context_via_tools(tools_endpoint, prompt, category, session_id, context),
                     timeout=min(_tool_budget - 5.0, _fetch_max),
                 )
-                if fetched and _context_has_real_data(fetched):
+                if fetched and (_context_has_real_data(fetched) or len(fetched.strip()) > 20):
                     context = fetched
+                    _has_any_context = True
                     print(f"[crm] fetched context cat={category} src=task-ep len={len(context)}", flush=True)
                     if category in _CRM_ENTITY_SPECIFIC_CATEGORIES:
                         strategy = "llm_direct"
@@ -2499,7 +2513,10 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
 
         # ── Step 2: A2A oracle — ask green agent with original prompt ─────────
         # Only if step 1 didn't produce context AND we have the green agent URL AND time.
-        if not _context_has_real_data(context) and GREEN_AGENT_MCP_URL:
+        _still_no_data = not _context_has_real_data(context) and not (
+            category in _CRM_ENTITY_SPECIFIC_CATEGORIES and _has_any_context
+        )
+        if _still_no_data and GREEN_AGENT_MCP_URL:
             _elapsed_pre2 = time.monotonic() - _task_start
             _oracle_budget = max(55.0 - _elapsed_pre2 - 10.0, 0.0)  # leave 10s for code_exec
             if _oracle_budget > 3.0:
@@ -2521,6 +2538,7 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                         # Long JSON response = use as context for code_exec
                         if _context_has_real_data(_oracle_resp):
                             context = _oracle_resp
+                            _has_any_context = True
                             print(f"[crm] oracle A2A context cat={category} len={len(_oracle_resp)}", flush=True)
                         else:
                             print(f"[crm] oracle A2A no-data cat={category} → None", flush=True)
@@ -2535,8 +2553,10 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                 print(f"[crm] no-data task cat={category} → None (budget={_oracle_budget:.1f}s)", flush=True)
                 return "None"
 
-        # If still no context after both attempts
-        if not _context_has_real_data(context):
+        # If still no context after both attempts (and not entity-specific with any text)
+        if not _context_has_real_data(context) and not (
+            category in _CRM_ENTITY_SPECIFIC_CATEGORIES and _has_any_context
+        ):
             print(f"[crm] no-data task cat={category} → None", flush=True)
             return "None"
     if category in _CRM_TEXT_CATEGORIES and not _context_has_real_data(context):
@@ -2625,11 +2645,17 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
     _brainos_budget = max(58.0 - _elapsed_pre_exec, 0.0)
     _brainos_tried = False
     answer: str = ""
+    # Entity-specific categories accept plain-text context for BrainOS reasoning
+    # (conversation logs, activity transcripts don't have JSON markers but are valid data)
+    _brainos_ctx_ok = _context_has_real_data(context) or (
+        category in _CRM_ENTITY_SPECIFIC_CATEGORIES and _has_any_context
+    ) or (
+        category in _CRM_TEXT_CATEGORIES and _has_any_context
+    )
     if (
         BRAINOS_API_KEY and BRAINOS_ORG_ID
         and category not in _CRM_PRIVATE_CATEGORIES
-        and category not in _CRM_TEXT_CATEGORIES        # text_qa uses KB context Haiku handles
-        and _context_has_real_data(context)
+        and _brainos_ctx_ok
         and len(context) <= 20000                       # BrainOS context window guard
         and _brainos_budget > 12.0
     ):
@@ -2868,8 +2894,11 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
     # cases where llm_direct confidently says "None" for a task with actual CRM data.
     _elapsed_final = time.monotonic() - _task_start
     _retry_budget = max(58.0 - _elapsed_final, 0.0)
+    _retry_ctx_ok = _context_has_real_data(context) or (
+        category in _CRM_ENTITY_SPECIFIC_CATEGORIES and _has_any_context
+    )
     if (answer == "None"
-            and _context_has_real_data(context)
+            and _retry_ctx_ok
             and category not in _CRM_PRIVATE_CATEGORIES
             and _retry_budget > 8.0):
         print(f"[crm] top-retry cat={category} strategy={strategy} budget={_retry_budget:.1f}s", flush=True)
@@ -2901,9 +2930,12 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
     # reasoning), larger contexts to Haiku. Cheaper and more accurate than Sonnet single-shot
     # for numerical aggregation tasks (sales totals, rates, monthly trends).
     # Skip for text/privacy cats (handled by dedicated paths above).
+    _moa_ctx_ok = _context_has_real_data(context) or (
+        category in _CRM_ENTITY_SPECIFIC_CATEGORIES and _has_any_context
+    )
     if (answer == "None"
             and BRAINOS_API_KEY and BRAINOS_ORG_ID
-            and _context_has_real_data(context)
+            and _moa_ctx_ok
             and category not in _CRM_PRIVATE_CATEGORIES
             and category not in _CRM_TEXT_CATEGORIES):
         _moa_elapsed = time.monotonic() - _task_start
