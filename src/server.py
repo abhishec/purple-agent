@@ -2522,9 +2522,16 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
             if _oracle_budget > 3.0:
                 try:
                     from src.mcp_bridge import fetch_via_a2a as _fetch_a2a
+                    # Include required_context in oracle query — it has critical IDs/dates
+                    # e.g. "Lead Id: 00QWt...", "Today's date: 2021-04-10", "Product Id: ..."
+                    _ctx_hint = context.strip() if context and context.strip() else ""
+                    _oracle_prompt = (
+                        f"{prompt}\n\nContext:\n{_ctx_hint[:400]}"
+                        if _ctx_hint else prompt
+                    )
                     _oracle_resp = await asyncio.wait_for(
-                        _fetch_a2a(GREEN_AGENT_MCP_URL, prompt, session_id, direct_query=True),
-                        timeout=min(_oracle_budget, 12.0),
+                        _fetch_a2a(GREEN_AGENT_MCP_URL, _oracle_prompt[:900], session_id, direct_query=True),
+                        timeout=min(_oracle_budget, 25.0),
                     )
                     if _oracle_resp and _oracle_resp.strip():
                         _ot = _oracle_resp.strip()
