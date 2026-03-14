@@ -164,10 +164,13 @@ async def brainos_analytical_fallback(
     eval_hints = {
         "model": "claude-haiku-4-5-20251001",
         "preScreenEnabled": use_prescreen,
-        "preScreenConfidence": 0.50,  # very low — accept local LLM answer even if uncertain
+        "preScreenConfidence": 0.45,  # low threshold — prefer local LLM (free) over Haiku
         "banditEnabled": True,
         "banditCategory": f"crm_moa_{category}",  # separate bandit arm from primary path
         "forceCopilot": True,         # bypass autonomous pipeline router — CRM data embedded in message
+        "evalPipeline": {
+            "localLLMFirst": True,    # DeepSeek-R1 (free) before Haiku for MOA fallback
+        },
     }
 
     async def _noop(name: str, params: dict) -> dict:
@@ -226,10 +229,13 @@ async def run_code_gen_task(
         "maxTokens": max_tokens,
         "temperature": temperature,
         "preScreenEnabled": True,
-        "preScreenConfidence": 0.55,
+        "preScreenConfidence": 0.45,   # accept local LLM even at moderate confidence
         "banditEnabled": True,
         "banditCategory": f"crm_codegen_{category}",
         "forceCopilot": True,   # bypass autonomous pipeline router — CRM data embedded in message
+        "evalPipeline": {
+            "localLLMFirst": True,     # DeepSeek-R1 (free) before Haiku/Sonnet
+        },
     }
 
     async def _noop(name: str, params: dict) -> dict:
