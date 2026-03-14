@@ -2511,9 +2511,11 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                     )
                     if _oracle_resp and _oracle_resp.strip():
                         _ot = _oracle_resp.strip()
-                        # Short response (≤200 chars) = direct answer from CRM oracle
-                        # e.g. "005Wt000003NJxtIAG", "None", "September", "CA"
-                        if len(_ot) <= 200 and not _ot.startswith("[{") and not _ot.startswith('{"'):
+                        # Short response (≤500 chars, not a JSON array/object) = direct answer
+                        # from CRM oracle: "005Wt000003NJxtIAG", "None", "September", "CA",
+                        # "High Priority", "West", "3", etc.
+                        _is_json_data = _ot.startswith("[{") or _ot.startswith('{"') or _ot.startswith("[\"")
+                        if len(_ot) <= 500 and not _is_json_data:
                             print(f"[crm] oracle A2A direct answer cat={category} len={len(_ot)}", flush=True)
                             return _ot
                         # Long JSON response = use as context for code_exec
@@ -2615,10 +2617,10 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                 return "None"
 
     # ── BrainOS local LLM primary path (cheap: DeepSeek-R1 first, Haiku fallback) ─
-    # Only for analytical/entity categories where context is available and budget allows.
+    # Runs for ALL non-private, non-text categories when context is available.
     # BrainOS routes to local SageMaker LLM (~$0) before falling back to Claude Haiku.
-    # Skip for: privacy (hard refusal), text_qa (needs KB reasoning Sonnet handles), code_exec
-    # categories with large datasets (BrainOS context window is limited to 20K chars).
+    # Now also handles code_exec categories: BrainOS Five-Phase Executor can generate
+    # and reason about Python computations from embedded CRM data.
     _elapsed_pre_exec = time.monotonic() - _task_start
     _brainos_budget = max(58.0 - _elapsed_pre_exec, 0.0)
     _brainos_tried = False
@@ -2627,7 +2629,6 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
         BRAINOS_API_KEY and BRAINOS_ORG_ID
         and category not in _CRM_PRIVATE_CATEGORIES
         and category not in _CRM_TEXT_CATEGORIES        # text_qa uses KB context Haiku handles
-        and strategy != "code_exec"                     # code_exec needs Python sandbox
         and _context_has_real_data(context)
         and len(context) <= 20000                       # BrainOS context window guard
         and _brainos_budget > 12.0

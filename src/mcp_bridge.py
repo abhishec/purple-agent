@@ -138,21 +138,32 @@ async def discover_tools(tools_endpoint: str, session_id: str = "") -> list[dict
     return []
 
 
-async def fetch_via_a2a(endpoint: str, prompt: str, session_id: str = "") -> str:
-    """Send a task to an A2A agent and return the text response (raw CRM data).
+async def fetch_via_a2a(endpoint: str, prompt: str, session_id: str = "", direct_query: bool = False) -> str:
+    """Send a task to an A2A agent and return the text response.
 
     The green-agent at port 9009 is an A2A server, not an MCP server.
     This function speaks A2A protocol: tries message/send (SDK v0.2.x) then tasks/send (legacy).
     Returns the text content of the response, or "" on failure.
+
+    direct_query=True: send the original prompt directly (oracle mode — treat the green agent
+    as a CRM oracle and use its answer verbatim). Used for categories where the green agent
+    can directly answer the question (e.g., entity lookups, routing decisions).
+
+    direct_query=False (default): ask for raw CRM data records as JSON context for local processing.
     """
     import uuid as _uuid
 
-    # Ask the green-agent for the raw CRM data records, not the computed answer.
-    data_prompt = (
-        "Return the relevant CRM data records as JSON for the following task. "
-        "Do not compute the answer — only return the raw data records.\n\n"
-        f"Task: {prompt[:600]}"
-    )
+    if direct_query:
+        # Oracle mode: ask the green agent the actual question and use its answer directly.
+        # The green agent knows the CRM scenario and can answer directly.
+        data_prompt = prompt[:800]
+    else:
+        # Data mode: ask the green-agent for the raw CRM data records, not the computed answer.
+        data_prompt = (
+            "Return the relevant CRM data records as JSON for the following task. "
+            "Do not compute the answer — only return the raw data records.\n\n"
+            f"Task: {prompt[:600]}"
+        )
 
     async with httpx.AsyncClient(timeout=TOOL_TIMEOUT * 3) as client:
         # ── Try message/send (A2A SDK v0.2.x) ────────────────────────────────
