@@ -1,7 +1,5 @@
 # agent-business-process — BrainOS Mini AI Worker
 
-> **τ²-Bench: 3/3 · 100% · #1 globally** (airline domain)
-> **CRMArenaPro: Run 8 in progress** — 2140 tasks, 22 CRM categories
 > One of five BrainOS Mini AI Workers built on the **Reflexive Agent Architecture**.
 
 ---
